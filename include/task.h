@@ -19,7 +19,7 @@
 #define USER_MMAP_TOP  0x04EF0000u
 #define TASK_MAX_FDS   32
 #define TASK_MAX_MMAPS 16
-#define TASK_MAX_SLOTS 8
+#define TASK_MAX_SLOTS 24
 
 /* Scheduling priorities */
 #define TASK_PRIO_RT        0       /* Real-time (highest) */
@@ -69,12 +69,19 @@ typedef struct {
     char name[64];
     char path[VFS_PATH_MAX];
     char cwd_path[VFS_PATH_MAX];
+    char login_name[32];
+    char home_path[VFS_PATH_MAX];
+    char shell_path[VFS_PATH_MAX];
     u32 entry;
     u32 brk_base;
     u32 brk;
     u32 brk_limit;
     const vfs_node_t *cwd;
     u32 pid;
+    u32 uid;
+    u32 gid;
+    u32 euid;
+    u32 egid;
     bool active;
     task_fd_t fds[TASK_MAX_FDS];
     task_mapping_t mappings[TASK_MAX_MMAPS];
@@ -99,6 +106,8 @@ bool task_can_run(void);
 bool task_is_active(void);
 int task_active_slot_index(void);
 const task_state_t *task_state(void);
+int task_authenticate_session(const char *username, const char *password);
+int task_set_credentials(u32 uid, u32 gid, u32 euid, u32 egid);
 int task_run_path(const char *path);
 int task_spawn_background(const char *path);
 void task_run_background_init(void);
@@ -127,6 +136,11 @@ int task_stat_fd(int fd, void *user_stat, size_t stat_size);
 int task_getdents64(int fd, void *user_buffer, size_t length);
 int task_getcwd(void *user_buffer, size_t length);
 int task_chdir(const char *path);
+int task_mkdir(const char *path, u32 mode);
+int task_chmod(const char *path, u32 mode);
+int task_unlink(const char *path);
+int task_link(const char *oldpath, const char *newpath);
+int task_rename(const char *oldpath, const char *newpath);
 void *task_mmap(void *addr, size_t length, int prot, int flags, int fd, u32 page_offset);
 int task_munmap(void *addr, size_t length);
 int task_fork_from_user(registers_t *regs);
@@ -137,11 +151,25 @@ int task_waitpid_from_user(int pid, void *status_ptr, int options, registers_t *
 NORETURN void task_sleep_current(registers_t *regs, u32 wake_tick, int return_value);
 NORETURN void task_yield_current(registers_t *regs, int return_value);
 NORETURN void task_exit_current(int exit_code);
+bool task_is_thread(int slot_index);
+
 NORETURN void task_abort_from_trap(registers_t *regs, const char *reason);
 void task_wake_slot(int slot, int return_value);
 bool task_write_slot_user(int slot, u32 user_addr, const void *src, size_t length);
 int task_slot_install_socket(int slot, void *socket);
 bool path_is_in_tmp(const char *path);
+
+/* Task slot access (for thread system) */
+int task_slot_pid(int index);
+bool task_slot_valid(int index);
+u32 task_slot_page_dir_phys(int index);
+u32 task_slot_tls_vaddr(int index);
+void *task_slot_page_dir(int index);
+int task_find_slot_by_pid(int pid);
+bool task_slot_regs(int index, registers_t *out);
+int task_create_thread_slot(u32 (*start_func)(void*), void *arg,
+                            u32 user_stack_top, u32 user_stack_base, u32 user_stack_size);
+void task_free_slot_by_index(int index);
 
 extern uintptr_t task_saved_esp;
 extern int task_exit_code;

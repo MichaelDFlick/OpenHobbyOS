@@ -28,6 +28,8 @@ typedef struct vfs_ramfile {
 typedef struct {
     u64 inode;
     u32 mode;
+    u32 uid;
+    u32 gid;
     u32 size;
     u32 block_size;
     u64 blocks;
@@ -43,7 +45,7 @@ bool vfs_init_from_ext2(u32 blkdev_id, u32 partition_start);
 bool vfs_ready(void);
 const vfs_node_t *vfs_root(void);
 const vfs_node_t *vfs_resolve(const vfs_node_t *cwd, const char *path);
-int vfs_mkdir(const char *path);
+int vfs_mkdir(const char *path, u32 mode, u32 uid, u32 gid);
 const vfs_node_t *vfs_parent(const vfs_node_t *node);
 const char *vfs_name(const vfs_node_t *node);
 const char *vfs_path(const vfs_node_t *node);
@@ -65,11 +67,12 @@ const vfs_node_t *vfs_child_at(const vfs_node_t *node, u32 index);
 
 bool vfs_node_is_ramfile(const vfs_node_t *node);
 vfs_ramfile_t *vfs_node_ramfile(const vfs_node_t *node);
-const vfs_node_t *vfs_create_ramfile(const char *path);
+const vfs_node_t *vfs_create_ramfile(const char *path, u32 mode, u32 uid, u32 gid);
 ssize_t vfs_write_ramfile(const vfs_node_t *node, u32 offset, const void *buffer, size_t length);
 int vfs_unlink_ramfile(const char *path);
 int vfs_link_ramfile(const char *oldpath, const char *newpath);
 int vfs_rename_ramfile(const char *oldpath, const char *newpath);
+int vfs_chmod_path(const char *path, u32 mode);
 
 /* Ext2 specific access */
 struct ext2_fs *vfs_ext2_fs(void);

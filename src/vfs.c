@@ -1,3 +1,5 @@
+#include "blkdev.h"
+#include "ata.h"
 #include "vfs.h"
 
 #include "abi/linux.h"
@@ -8,6 +10,7 @@
 #include "memory.h"
 #include "panic.h"
 #include "pit.h"
+#include "task.h"
 #include "string.h"
 
 struct vfs_node {
@@ -15,6 +18,9 @@ struct vfs_node {
     char name[VFS_NAME_MAX];
     char path[VFS_PATH_MAX];
     bool is_dir;
+    u32 mode;
+    u32 uid;
+    u32 gid;
     u32 virtual_id;
     enum vfs_type type;
     const initrd_file_t *file;
@@ -30,6 +36,9 @@ static bool mounted;
 static u64 next_inode = 1;
 static struct ext2_fs root_fs;
 static bool has_ext2_root = false;
+
+static void vfs_overlay_initrd(void);
+static void vfs_bootstrap_standard_dirs(void);
 
 enum {
     VFS_VIRTUAL_NONE = 0,
@@ -127,8 +136,39 @@ static bool looks_executable(const initrd_file_t *file) {
     return file && data_looks_executable(file->data, file->size);
 }
 
-static bool ramfile_looks_executable(const vfs_ramfile_t *ramf) {
-    return ramf && data_looks_executable(ramf->data, ramf->size);
+static const task_state_t *vfs_current_task_state(void) {
+    const task_state_t *state = task_state();
+    return state ? state : NULL;
+}
+
+static void vfs_set_node_identity(struct vfs_node *node, u32 mode, u32 uid, u32 gid) {
+    if (!node) {
+        return;
+    }
+    node->mode = mode;
+    node->uid = uid;
+    node->gid = gid;
+}
+
+static void vfs_init_default_identity(struct vfs_node *node, bool is_dir) {
+    const task_state_t *state = vfs_current_task_state();
+    u32 uid = 0;
+    u32 gid = 0;
+
+    if (state) {
+        uid = state->uid;
+        gid = state->gid;
+    }
+
+    vfs_set_node_identity(node, is_dir ? 0755u : 0644u, uid, gid);
+}
+
+static void vfs_init_system_identity(struct vfs_node *node, bool is_dir) {
+    vfs_set_node_identity(node, is_dir ? 0755u : 0644u, 0, 0);
+}
+
+static bool vfs_path_is_tmp(const char *path) {
+    return path && (strncmp(path, "/tmp/", 5) == 0 || strcmp(path, "/tmp") == 0);
 }
 
 static size_t append_text(char *buffer, size_t size, size_t used, const char *text) {
@@ -200,6 +240,7 @@ static struct vfs_node *new_node(const char *name, bool is_dir) {
     node->name[VFS_NAME_MAX - 1] = '\0';
     node->is_dir = is_dir;
     node->type = VFS_TYPE_RAMFS;
+    vfs_init_default_identity(node, is_dir);
     return node;
 }
 
@@ -258,6 +299,8 @@ static bool create_virtual_nodes(void) {
             if (*cursor == '\0') {
                 struct vfs_node *node = new_node(segment, false);
                 node->virtual_id = virtual_files[i].id;
+                vfs_init_system_identity(node, false);
+                vfs_set_node_identity(node, 0666u, 0, 0);
                 add_child(parent, node);
                 break;
             } else {
@@ -294,6 +337,7 @@ bool vfs_init_ramfs(void) {
             if (*cursor == '\0') {
                 struct vfs_node *node = new_node(segment, false);
                 node->file = file;
+                vfs_set_node_identity(node, looks_executable(file) ? 0755u : 0644u, 0, 0);
                 add_child(parent, node);
                 build_path(node, node->path, VFS_PATH_MAX);
                 break;
@@ -331,6 +375,9 @@ static bool ext2_build_tree_recursive(struct ext2_fs *fs, struct vfs_node *paren
         struct vfs_node *node = new_node(name_buf, is_dir);
         node->type = VFS_TYPE_EXT2;
         node->ext2_inode = entry.inode;
+        node->mode = child_inode.i_mode & 07777u;
+        node->uid = child_inode.i_uid;
+        node->gid = child_inode.i_gid;
         add_child(parent, node);
 
         char new_path[256];
@@ -375,13 +422,22 @@ static bool vfs_init_ext2(u32 blkdev_id, u32 partition_start) {
 bool vfs_init_from_initrd(void) {
     blkdev_init();
     ata_init();
-    return vfs_init_ramfs();
+    if (!vfs_init_ramfs()) {
+        return false;
+    }
+    vfs_bootstrap_standard_dirs();
+    return true;
 }
 
 bool vfs_init_from_ext2(u32 blkdev_id, u32 partition_start) {
     blkdev_init();
     ata_init();
-    return vfs_init_ext2(blkdev_id, partition_start);
+    if (!vfs_init_ext2(blkdev_id, partition_start)) {
+        return false;
+    }
+    vfs_overlay_initrd();
+    vfs_bootstrap_standard_dirs();
+    return true;
 }
 
 /* Initrd holds the canonical userland image; merge files not already on ext2. */
@@ -413,6 +469,7 @@ static void vfs_overlay_initrd(void) {
                     struct vfs_node *node = new_node(segment, false);
                     node->type = VFS_TYPE_RAMFS;
                     node->file = file;
+                    vfs_set_node_identity(node, looks_executable(file) ? 0755u : 0644u, 0, 0);
                     add_child(parent, node);
                     build_path(node, node->path, VFS_PATH_MAX);
                 }
@@ -433,6 +490,44 @@ static void vfs_overlay_initrd(void) {
     }
 }
 
+static void vfs_ensure_directory_tree(const char *path, u32 mode, u32 uid, u32 gid) {
+    struct vfs_node *parent = root_node;
+    const char *cursor = path;
+    char segment[VFS_NAME_MAX];
+
+    if (!path || !root_node) {
+        return;
+    }
+
+    while (path_segment(&cursor, segment, sizeof(segment))) {
+        struct vfs_node *child = find_child(parent, segment);
+
+        if (!child) {
+            child = new_node(segment, true);
+            vfs_set_node_identity(child, mode & 07777u, uid, gid);
+            add_child(parent, child);
+        }
+
+        if (*cursor == '\0') {
+            vfs_set_node_identity(child, mode & 07777u, uid, gid);
+            return;
+        }
+
+        if (!child->is_dir) {
+            return;
+        }
+
+        parent = child;
+    }
+}
+
+static void vfs_bootstrap_standard_dirs(void) {
+    vfs_ensure_directory_tree("/tmp", 0777u, 0, 0);
+    vfs_ensure_directory_tree("/home", 0755u, 0, 0);
+    vfs_ensure_directory_tree("/home/user", 0700u, 1000u, 1000u);
+    vfs_ensure_directory_tree("/root", 0700u, 0, 0);
+}
+
 void vfs_init(void) {
     blkdev_init();
     ata_init();
@@ -444,6 +539,7 @@ void vfs_init(void) {
                 if (ext2_is_valid(0, partitions[i].lba_start)) {
                     if (vfs_init_ext2(0, partitions[i].lba_start)) {
                         vfs_overlay_initrd();
+                        vfs_bootstrap_standard_dirs();
                         console_printf("[vfs] mounted ext2 root\n");
                         return;
                     }
@@ -454,6 +550,7 @@ void vfs_init(void) {
 
     console_printf("[vfs] no ext2 root found, using initrd\n");
     vfs_init_ramfs();
+    vfs_bootstrap_standard_dirs();
 }
 
 bool vfs_ready(void) {
@@ -500,8 +597,8 @@ const vfs_node_t *vfs_resolve(const vfs_node_t *cwd, const char *path) {
     return base;
 }
 
-int vfs_mkdir(const char *path) {
-    if (!path || !mounted || has_ext2_root) {
+int vfs_mkdir(const char *path, u32 mode, u32 uid, u32 gid) {
+    if (!path || !mounted || (has_ext2_root && !vfs_path_is_tmp(path))) {
         return -1;
     }
 
@@ -515,6 +612,7 @@ int vfs_mkdir(const char *path) {
                 return -1;
             }
             struct vfs_node *node = new_node(segment, true);
+            vfs_set_node_identity(node, mode & 07777u, uid, gid);
             add_child(parent, node);
             return 0;
         } else {
@@ -686,22 +784,22 @@ bool vfs_stat_node(const vfs_node_t *node, vfs_stat_t *stat) {
     stat->size = node->is_dir ? 0 : vfs_file_size(node);
     stat->blocks = (stat->size + 511u) / 512u;
     stat->nlink = node->is_dir ? 2u : (node->ramfile ? node->ramfile->links : 1u);
+    stat->uid = node->uid;
+    stat->gid = node->gid;
 
     if (node->is_dir) {
-        stat->mode = LINUX_S_IFDIR | (node->parent == root_node ? 0777u : 0555u);
+        stat->mode = LINUX_S_IFDIR | (node->mode & 07777u);
     } else if (node->virtual_id == VFS_VIRTUAL_DEV_NULL || node->virtual_id == VFS_VIRTUAL_DEV_TTY || node->virtual_id == VFS_VIRTUAL_DEV_FB0 || node->virtual_id == VFS_VIRTUAL_DEV_KEYBOARD) {
-        stat->mode = LINUX_S_IFCHR | 0666u;
+        stat->mode = LINUX_S_IFCHR | (node->mode & 07777u);
         stat->block_size = 1;
     } else if (node->ramfile) {
-        /* Ramdisk files - check if ELF for execute permission */
-        stat->mode = LINUX_S_IFREG | (ramfile_looks_executable(node->ramfile) ? 0555u : 0666u);
+        stat->mode = LINUX_S_IFREG | (node->mode & 07777u);
     } else if (node->type == VFS_TYPE_EXT2) {
-        stat->mode = LINUX_S_IFREG | 0555u;
+        stat->mode = (node->is_dir ? LINUX_S_IFDIR : LINUX_S_IFREG) | (node->mode & 07777u);
     } else if (node->file) {
-        /* Initrd overlay files - mark as executable if they look like ELF */
-        stat->mode = LINUX_S_IFREG | (looks_executable(node->file) ? 0555u : 0444u);
+        stat->mode = LINUX_S_IFREG | (node->mode & 07777u);
     } else {
-        stat->mode = LINUX_S_IFREG | 0444u;
+        stat->mode = LINUX_S_IFREG | (node->mode & 07777u);
     }
     return true;
 }
@@ -740,8 +838,8 @@ vfs_ramfile_t *vfs_node_ramfile(const vfs_node_t *node) {
     return node ? node->ramfile : NULL;
 }
 
-const vfs_node_t *vfs_create_ramfile(const char *path) {
-    if (!path || !mounted || has_ext2_root) {
+const vfs_node_t *vfs_create_ramfile(const char *path, u32 mode, u32 uid, u32 gid) {
+    if (!path || !mounted || (has_ext2_root && !vfs_path_is_tmp(path))) {
         return NULL;
     }
 
@@ -769,6 +867,7 @@ const vfs_node_t *vfs_create_ramfile(const char *path) {
                 free_ramfile(node->ramfile);
                 return NULL;
             }
+            vfs_set_node_identity(node, mode & 07777u, uid, gid);
             add_child(parent, node);
             build_path(node, node->path, VFS_PATH_MAX);
             return node;
@@ -830,7 +929,7 @@ ssize_t vfs_write_ramfile(const vfs_node_t *node, u32 offset, const void *buffer
 }
 
 int vfs_unlink_ramfile(const char *path) {
-    if (!path || !mounted || has_ext2_root) {
+    if (!path || !mounted || (has_ext2_root && !vfs_path_is_tmp(path))) {
         return -1;
     }
 
@@ -848,7 +947,8 @@ int vfs_unlink_ramfile(const char *path) {
 }
 
 int vfs_link_ramfile(const char *oldpath, const char *newpath) {
-    if (!oldpath || !newpath || !mounted || has_ext2_root) {
+    if (!oldpath || !newpath || !mounted ||
+        ((has_ext2_root) && (!vfs_path_is_tmp(oldpath) || !vfs_path_is_tmp(newpath)))) {
         return -1;
     }
 
@@ -883,7 +983,8 @@ int vfs_link_ramfile(const char *oldpath, const char *newpath) {
 }
 
 int vfs_rename_ramfile(const char *oldpath, const char *newpath) {
-    if (!oldpath || !newpath || !mounted || has_ext2_root) {
+    if (!oldpath || !newpath || !mounted ||
+        ((has_ext2_root) && (!vfs_path_is_tmp(oldpath) || !vfs_path_is_tmp(newpath)))) {
         return -1;
     }
 
@@ -892,4 +993,20 @@ int vfs_rename_ramfile(const char *oldpath, const char *newpath) {
     }
 
     return vfs_unlink_ramfile(oldpath);
+}
+
+int vfs_chmod_path(const char *path, u32 mode) {
+    const vfs_node_t *node;
+
+    if (!path || !mounted) {
+        return -1;
+    }
+
+    node = vfs_resolve(NULL, path);
+    if (!node) {
+        return -1;
+    }
+
+    ((struct vfs_node *)node)->mode = mode & 07777u;
+    return 0;
 }

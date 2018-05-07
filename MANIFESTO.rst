@@ -427,8 +427,6 @@ These are Git submodules providing library code for ports and kernel:
      - Doom game engine port layer
    * - uACPI/
      - ACPI implementation (linked into kernel)
-   * - lua/
-     - Lua 5.5 scripting language
    * - ffmpeg/
      - FFmpeg multimedia library
    * - tinygl/
@@ -512,8 +510,6 @@ Port Build Scripts
      - XNX compositor + client library + demo
    * - doom/build-doom.sh
      - Doom game via doomgeneric
-   * - lua/build-lua.sh
-     - Lua 5.5 scripting language
    * - ffmpeg/build-ffmpeg.sh
      - FFmpeg multimedia library
    * - tinygl/build-tinygl.sh
@@ -815,11 +811,9 @@ Configuration
    * - ``make clean``
      - Remove build artifacts
    * - ``make ports``
-     - Build all ports (fastfetch + XNX + Lua + gears)
+     - Build all ports (fastfetch + XNX + gears)
    * - ``make ports-newlib``
      - Build newlib only
-   * - ``make ports-lua``
-     - Build Lua scripting language
    * - ``make ports-ffmpeg``
      - Build FFmpeg multimedia library
    * - ``make ports-tinygl``

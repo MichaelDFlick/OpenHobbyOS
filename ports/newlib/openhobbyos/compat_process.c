@@ -91,10 +91,6 @@ pid_t setsid(void) {
     return getpid();
 }
 
-int setegid(gid_t gid) {
-    return setgid(gid);
-}
-
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions) {
     if (actions == NULL) {
         return EINVAL;

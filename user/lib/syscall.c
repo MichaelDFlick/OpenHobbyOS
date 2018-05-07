@@ -212,6 +212,54 @@ int sys_mkdir(const char *path, int mode) {
     return syscall2(OHOS_SYS_MKDIR, (int)path, mode);
 }
 
+int sys_chmod(const char *path, int mode) {
+    return syscall2(OHOS_SYS_CHMOD, (int)path, mode);
+}
+
+int sys_auth(const char *username, const char *password) {
+    return syscall2(OHOS_SYS_AUTH, (int)username, (int)password);
+}
+
+int sys_setuid(unsigned int uid) {
+    return syscall1(OHOS_SYS_SETUID, (int)uid);
+}
+
+int sys_setgid(unsigned int gid) {
+    return syscall1(OHOS_SYS_SETGID, (int)gid);
+}
+
+int sys_seteuid(unsigned int uid) {
+    return syscall1(OHOS_SYS_SETEUID, (int)uid);
+}
+
+int sys_setegid(unsigned int gid) {
+    return syscall1(OHOS_SYS_SETEGID, (int)gid);
+}
+
+int sys_thread_create(unsigned int *tid_out, const thread_attr_t *attr, unsigned int (*start_func)(void *), void *arg) {
+    return syscall4(OHOS_SYS_THREAD_CREATE, (int)tid_out, (int)attr, (int)start_func, (int)arg);
+}
+
+int sys_thread_exit(int exit_code) {
+    return syscall1(OHOS_SYS_THREAD_EXIT, exit_code);
+}
+
+int sys_thread_join(unsigned int tid, int *status) {
+    return syscall2(OHOS_SYS_THREAD_JOIN, (int)tid, (int)status);
+}
+
+int sys_thread_detach(unsigned int tid) {
+    return syscall1(OHOS_SYS_THREAD_DETACH, (int)tid);
+}
+
+int sys_thread_yield(void) {
+    return syscall0(OHOS_SYS_THREAD_YIELD);
+}
+
+unsigned int sys_thread_self(void) {
+    return (unsigned int)syscall0(OHOS_SYS_THREAD_SELF);
+}
+
 int sys_reboot(void) {
     return syscall0(OHOS_SYS_REBOOT);
 }

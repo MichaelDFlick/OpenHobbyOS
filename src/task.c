@@ -74,6 +74,7 @@ typedef enum {
 typedef struct {
     bool used;
     bool seeded;
+    bool is_thread;
     task_slot_status_t status;
     int parent_pid;
     int exit_code;
@@ -88,18 +89,35 @@ typedef struct {
     /* TLS: GS segment base for stack canary (%gs:0x14) */
     u32 tls_vaddr;
     u32 canary;
+    /* Thread user stack (for cleanup when thread exits) */
+    u32 thread_stack_base;
+    u32 thread_stack_size;
 } task_slot_t;
 
 _Static_assert(TASK_OFFSETOF(task_slot_t, regs) >= TASK_OFFSETOF(task_slot_t, state) + sizeof(task_state_t),
                "regs must not overlap state in task_slot_t");
-_Static_assert(sizeof(task_state_t) == 2640, "task_state_t size must be 2640 bytes");
-_Static_assert(TASK_OFFSETOF(task_slot_t, regs) == 2672, "regs must be at offset 2672 in task_slot_t");
+_Static_assert(sizeof(task_state_t) == 3200, "task_state_t size must be 3200 bytes");
+_Static_assert(TASK_OFFSETOF(task_slot_t, regs) == 3232, "regs must be at offset 3232 in task_slot_t");
 
 static task_slot_t task_slots[TASK_MAX_SLOTS] __attribute__((aligned(64)));
 static int active_task_slot = -1;
 static int scheduler_root_pid = -1;
 static int fpu_owner_slot = -1;
 static int scheduler_rr_cursor = -1;
+
+typedef struct {
+    const char *name;
+    const char *password;
+    u32 uid;
+    u32 gid;
+    const char *home;
+    const char *shell;
+} task_user_record_t;
+
+static const task_user_record_t task_user_db[] = {
+    {"root", "root", 0u, 0u, "/root", "/bin/gosh"},
+    {"user", "user", 1000u, 1000u, "/home/user", "/bin/gosh"},
+};
 
 int task_active_slot_index(void) {
     return active_task_slot;
@@ -124,6 +142,170 @@ static task_slot_t *task_slot_at(int index) {
         return NULL;
     }
     return &task_slots[index];
+}
+
+static const task_user_record_t *task_find_user_record(const char *name) {
+    if (!name) {
+        return NULL;
+    }
+    for (size_t i = 0; i < sizeof(task_user_db) / sizeof(task_user_db[0]); ++i) {
+        if (strcmp(task_user_db[i].name, name) == 0) {
+            return &task_user_db[i];
+        }
+    }
+    return NULL;
+}
+
+static const task_user_record_t *task_find_user_by_ids(u32 uid, u32 gid) {
+    for (size_t i = 0; i < sizeof(task_user_db) / sizeof(task_user_db[0]); ++i) {
+        if (task_user_db[i].uid == uid && task_user_db[i].gid == gid) {
+            return &task_user_db[i];
+        }
+    }
+    return NULL;
+}
+
+static void task_copy_string_field(char *dest, size_t dest_size, const char *src) {
+    if (!dest || dest_size == 0) {
+        return;
+    }
+    if (!src) {
+        dest[0] = '\0';
+        return;
+    }
+    strncpy(dest, src, dest_size - 1);
+    dest[dest_size - 1] = '\0';
+}
+
+static void task_apply_user_record(task_state_t *state, const task_user_record_t *record) {
+    if (!state || !record) {
+        return;
+    }
+
+    state->uid = record->uid;
+    state->gid = record->gid;
+    state->euid = record->uid;
+    state->egid = record->gid;
+    task_copy_string_field(state->login_name, sizeof(state->login_name), record->name);
+    task_copy_string_field(state->home_path, sizeof(state->home_path), record->home);
+    task_copy_string_field(state->shell_path, sizeof(state->shell_path), record->shell);
+}
+
+static void task_apply_default_identity(task_state_t *state) {
+    static const task_user_record_t root_record = {"root", "root", 0u, 0u, "/root", "/bin/gosh"};
+    task_apply_user_record(state, &root_record);
+}
+
+int task_slot_pid(int index) {
+    task_slot_t *s = task_slot_at(index);
+    return s ? (int)s->state.pid : -1;
+}
+
+bool task_slot_valid(int index) {
+    return task_slot_at(index) != NULL;
+}
+
+bool task_is_thread(int slot_index) {
+    task_slot_t *s = task_slot_at(slot_index);
+    return s && s->is_thread;
+}
+
+u32 task_slot_page_dir_phys(int index) {
+    task_slot_t *s = task_slot_at(index);
+    return s ? s->page_directory_phys : 0;
+}
+
+u32 task_slot_tls_vaddr(int index) {
+    task_slot_t *s = task_slot_at(index);
+    return s ? s->tls_vaddr : 0;
+}
+
+void *task_slot_page_dir(int index) {
+    task_slot_t *s = task_slot_at(index);
+    return s ? (void *)s->page_directory : NULL;
+}
+
+int task_find_slot_by_pid(int pid) {
+    for (int i = 0; i < TASK_MAX_SLOTS; ++i) {
+        if (task_slots[i].used && (int)task_slots[i].state.pid == pid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool task_slot_regs(int index, registers_t *out) {
+    task_slot_t *s = task_slot_at(index);
+    if (!s) return false;
+    *out = s->regs;
+    return true;
+}
+
+static int task_alloc_slot_index(void) {
+    for (int i = 0; i < TASK_MAX_SLOTS; ++i) {
+        if (!task_slots[i].used) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static task_slot_t *task_active_slot(void);
+static void task_free_slot(task_slot_t *slot);
+
+int task_create_thread_slot(u32 (*start_func)(void*), void *arg,
+                            u32 user_stack_top, u32 user_stack_base, u32 user_stack_size) {
+    task_slot_t *parent = task_active_slot();
+    int slot_idx;
+
+    if (!parent || !start_func) return -1;
+
+    slot_idx = task_alloc_slot_index();
+    if (slot_idx < 0) return -1;
+
+    task_slot_t *slot = &task_slots[slot_idx];
+    memset(slot, 0, sizeof(*slot));
+    slot->used = true;
+    slot->is_thread = true;
+    slot->canary = 0xCAFEBABE;
+
+    memcpy(&slot->state, &parent->state, sizeof(task_state_t));
+    slot->state.pid = next_pid++;
+    slot->state.active = true;
+    slot->state.page_directory = parent->page_directory;
+    slot->state.page_directory_phys = parent->page_directory_phys;
+
+    slot->page_directory = parent->page_directory;
+    slot->page_directory_phys = parent->page_directory_phys;
+    slot->tls_vaddr = parent->tls_vaddr;
+    slot->parent_pid = (int)parent->state.pid;
+
+    memset(&slot->regs, 0, sizeof(slot->regs));
+    slot->regs.ds = 0x23;
+    slot->regs.es = 0x23;
+    slot->regs.fs = 0x23;
+    slot->regs.gs = USER_GS;
+    slot->regs.cs = 0x1B;
+    slot->regs.ss = 0x23;
+    slot->regs.eflags = 0x202;
+
+    user_stack_top -= 4;
+    *(u32 *)(uintptr_t)(user_stack_top) = (u32)arg;
+    user_stack_top -= 4;
+    *(u32 *)(uintptr_t)(user_stack_top) = 0;
+    slot->regs.useresp = user_stack_top;
+    slot->regs.eip = (u32)(uintptr_t)start_func;
+
+    slot->status = TASK_SLOT_RUNNABLE;
+    slot->exit_code = 0;
+    slot->wait_pid = 0;
+    slot->wait_status_ptr = 0;
+    slot->wake_tick = 0;
+    slot->thread_stack_base = user_stack_base;
+    slot->thread_stack_size = user_stack_size;
+    slot->seeded = true;
+
+    return slot_idx;
 }
 
 static task_slot_t *task_active_slot(void) {
@@ -152,9 +334,23 @@ static task_slot_t *task_alloc_slot(void) {
     return NULL;
 }
 
+static void task_free_thread_children(u32 pid) {
+    for (int i = 0; i < TASK_MAX_SLOTS; ++i) {
+        task_slot_t *s = &task_slots[i];
+        if (s->used && s->is_thread && (u32)s->parent_pid == pid) {
+            task_free_slot(s);
+        }
+    }
+}
+
 static void task_free_slot(task_slot_t *slot) {
     if (!slot) {
         return;
+    }
+
+    /* Clean up any thread children before freeing parent */
+    if (!slot->is_thread) {
+        task_free_thread_children(slot->state.pid);
     }
 
     if (slot->page_directory != NULL && page_directory_get_current() == slot->page_directory) {
@@ -185,14 +381,33 @@ static void task_free_slot(task_slot_t *slot) {
         }
     }
 
-    /* Destroy page directory (frees all user pages) */
-    if (slot->page_directory) {
-        page_directory_destroy(slot->page_directory);
-        slot->page_directory = NULL;
-        slot->page_directory_phys = 0;
+    /* Clean up thread user stack if this is a thread */
+    if (slot->is_thread && slot->thread_stack_size > 0 && slot->page_directory) {
+        page_directory_t *old_pd = page_directory_get_current();
+        page_directory_switch(slot->page_directory);
+        for (u32 va = slot->thread_stack_base;
+             va < slot->thread_stack_base + slot->thread_stack_size;
+             va += PAGE_SIZE) {
+            if (page_is_present(slot->page_directory, va)) {
+                paging_free_user_page(slot->page_directory, va);
+            }
+        }
+        page_directory_switch(old_pd);
     }
 
+    /* Destroy page directory (frees all user pages) — only if we own it */
+    if (slot->page_directory && !slot->is_thread) {
+        page_directory_destroy(slot->page_directory);
+    }
+    slot->page_directory = NULL;
+    slot->page_directory_phys = 0;
+
     memset(slot, 0, sizeof(*slot));
+}
+
+void task_free_slot_by_index(int index) {
+    if (index < 0 || index >= TASK_MAX_SLOTS) return;
+    task_free_slot(&task_slots[index]);
 }
 
 static bool task_slot_write_to_user(task_slot_t *slot, u32 user_addr, const void *src, size_t length) {
@@ -323,6 +538,7 @@ static void task_restore_kernel_context(void) {
     current_task.cwd = vfs_root();
     strcpy(current_task.cwd_path, "/");
     current_task.pid = next_pid++;
+    task_apply_default_identity(&current_task);
     task_reset_descriptors();
     scheduler_rr_cursor = -1;
     active_task_slot = -1;
@@ -416,6 +632,66 @@ static bool task_is_executable_node(const vfs_node_t *node) {
     return !stat.is_dir && ((stat.mode & 0111u) != 0);
 }
 
+static int task_permission_bits_for_uid(const task_state_t *state, const vfs_stat_t *stat) {
+    u32 mode = 0;
+    u32 perm;
+
+    if (!state || !stat) {
+        return 0;
+    }
+
+    if (state->euid == 0) {
+        return 0777;
+    }
+
+    perm = stat->mode & 07777u;
+    if (state->euid == stat->uid) {
+        mode = (perm >> 6) & 7u;
+    } else if (state->egid == stat->gid) {
+        mode = (perm >> 3) & 7u;
+    } else {
+        mode = perm & 7u;
+    }
+
+    return (int)mode;
+}
+
+static bool task_node_access_allowed_for_state(const task_state_t *state, const vfs_node_t *node, int mode);
+
+static bool task_node_access_allowed(const vfs_node_t *node, int mode) {
+    return task_node_access_allowed_for_state(&current_task, node, mode);
+}
+
+static bool task_node_access_allowed_for_state(const task_state_t *state, const vfs_node_t *node, int mode) {
+    vfs_stat_t stat;
+    int perms;
+
+    if (!node || !vfs_stat_node(node, &stat)) {
+        return false;
+    }
+    if (!state) {
+        return false;
+    }
+    if (state->euid == 0) {
+        return true;
+    }
+    if (mode == LINUX_F_OK) {
+        return true;
+    }
+
+    perms = task_permission_bits_for_uid(state, &stat);
+    if ((mode & LINUX_R_OK) != 0 && (perms & 4) == 0) {
+        return false;
+    }
+    if ((mode & LINUX_W_OK) != 0 && (perms & 2) == 0) {
+        return false;
+    }
+    if ((mode & LINUX_X_OK) != 0 && (perms & 1) == 0) {
+        return false;
+    }
+    return true;
+}
+
 static bool task_push_bytes(u32 *stack, const void *data, size_t length, u32 *user_address) {
     if (*stack < USER_BASE + length) {
         return false;
@@ -433,20 +709,11 @@ static bool task_push_u32(u32 *stack, u32 value) {
 }
 
 static bool task_prepare_user_stack(int argc, const char *const *argv, u32 *user_stack) {
-    static const char *const fixed_env[] = {
-        "HOME=/root",
-        "USER=root",
-        "LOGNAME=root",
-        "SHELL=/bin/gosh",
-        "ENV=/etc/goshrc",
-        "PATH=/bin:/usr/bin",
-        "TERM=linux",
-        "COLORTERM=truecolor",
-        "LANG=C",
-        "XDG_CONFIG_HOME=/root/.config",
-        "XDG_CONFIG_DIRS=/etc/xdg:/etc",
-        "XDG_DATA_DIRS=/usr/share:/usr/local/share",
-    };
+    char home_env[VFS_PATH_MAX + 6];
+    char user_env[64];
+    char logname_env[64];
+    char shell_env[VFS_PATH_MAX + 8];
+    char config_home[VFS_PATH_MAX + 16];
     char pwd_env[VFS_PATH_MAX + 5];
     const char *env_list[TASK_ENV_MAX];
     u32 env_ptrs[TASK_ENV_MAX];
@@ -456,17 +723,34 @@ static bool task_prepare_user_stack(int argc, const char *const *argv, u32 *user
     u32 stack = USER_STACK_TOP;
     u32 metadata_bytes;
     int envc = 0;
+    const char *login = current_task.login_name[0] ? current_task.login_name : "root";
+    const char *home = current_task.home_path[0] ? current_task.home_path : "/root";
+    const char *shell = current_task.shell_path[0] ? current_task.shell_path : "/bin/gosh";
 
     if (argc < 0 || argc > TASK_STACK_ARG_MAX) {
         return false;
     }
 
+    snprintf(home_env, sizeof(home_env), "HOME=%s", home);
+    snprintf(user_env, sizeof(user_env), "USER=%s", login);
+    snprintf(logname_env, sizeof(logname_env), "LOGNAME=%s", login);
+    snprintf(shell_env, sizeof(shell_env), "SHELL=%s", shell);
+    snprintf(config_home, sizeof(config_home), "XDG_CONFIG_HOME=%s/.config", home);
     snprintf(pwd_env, sizeof(pwd_env), "PWD=%s", current_task.cwd_path[0] ? current_task.cwd_path : "/");
 
-    for (size_t i = 0; i < sizeof(fixed_env) / sizeof(fixed_env[0]); ++i) {
-        env_list[envc++] = fixed_env[i];
-    }
+    env_list[envc++] = home_env;
+    env_list[envc++] = user_env;
+    env_list[envc++] = logname_env;
+    env_list[envc++] = shell_env;
+    env_list[envc++] = "ENV=/etc/goshrc";
+    env_list[envc++] = "PATH=/bin:/usr/bin";
+    env_list[envc++] = "TERM=linux";
+    env_list[envc++] = "COLORTERM=truecolor";
+    env_list[envc++] = "LANG=C";
+    env_list[envc++] = config_home;
     env_list[envc++] = pwd_env;
+    env_list[envc++] = "XDG_CONFIG_DIRS=/etc/xdg:/etc";
+    env_list[envc++] = "XDG_DATA_DIRS=/usr/share:/usr/local/share";
 
     for (int i = envc - 1; i >= 0; --i) {
         size_t len = strlen(env_list[i]) + 1;
@@ -553,8 +837,8 @@ static void task_fill_stat64(const vfs_node_t *node, struct linux_stat64 *stat) 
     stat->__st_ino = (u32)info.inode;
     stat->st_mode = info.mode;
     stat->st_nlink = info.nlink;
-    stat->st_uid = 0;
-    stat->st_gid = 0;
+    stat->st_uid = info.uid;
+    stat->st_gid = info.gid;
     stat->st_rdev = 0;
     stat->st_size = info.size;
     stat->st_blksize = info.block_size;
@@ -587,7 +871,7 @@ static ssize_t task_console_read(void *buffer, size_t length) {
         }
 
         if (used > 0) break;
-        return 0;
+        cpu_halt();
     }
 
     return (ssize_t)used;
@@ -642,6 +926,7 @@ void task_init(void) {
     current_task.cwd = vfs_root();
     strcpy(current_task.cwd_path, "/");
     current_task.pid = next_pid++;
+    task_apply_default_identity(&current_task);
     socket_init();
     pipe_init();
     task_reset_descriptors();
@@ -658,6 +943,55 @@ bool task_is_active(void) {
 
 const task_state_t *task_state(void) {
     return &current_task;
+}
+
+int task_set_credentials(u32 uid, u32 gid, u32 euid, u32 egid) {
+    const task_user_record_t *record = NULL;
+    bool same_identity;
+
+    same_identity = (uid == current_task.uid && gid == current_task.gid &&
+                     euid == current_task.euid && egid == current_task.egid);
+    if (!same_identity && current_task.euid != 0) {
+        if (uid != current_task.uid || gid != current_task.gid ||
+            euid != current_task.euid || egid != current_task.egid) {
+            return LERR_PERM;
+        }
+    }
+
+    record = task_find_user_by_ids(uid, gid);
+    if (!record && uid == 0u && gid == 0u) {
+        record = task_find_user_record("root");
+    }
+    if (!record && uid == 1000u && gid == 1000u) {
+        record = task_find_user_record("user");
+    }
+
+    current_task.uid = uid;
+    current_task.gid = gid;
+    current_task.euid = euid;
+    current_task.egid = egid;
+
+    if (record) {
+        task_copy_string_field(current_task.login_name, sizeof(current_task.login_name), record->name);
+        task_copy_string_field(current_task.home_path, sizeof(current_task.home_path), record->home);
+        task_copy_string_field(current_task.shell_path, sizeof(current_task.shell_path), record->shell);
+    } else {
+        task_copy_string_field(current_task.login_name, sizeof(current_task.login_name), uid == 0u ? "root" : "user");
+        task_copy_string_field(current_task.home_path, sizeof(current_task.home_path), uid == 0u ? "/root" : "/home/user");
+        task_copy_string_field(current_task.shell_path, sizeof(current_task.shell_path), "/bin/gosh");
+    }
+
+    return 0;
+}
+
+int task_authenticate_session(const char *username, const char *password) {
+    const task_user_record_t *record = task_find_user_record(username);
+
+    if (!record || !password || strcmp(password, record->password) != 0) {
+        return LERR_PERM;
+    }
+
+    return task_set_credentials(record->uid, record->gid, record->uid, record->gid);
 }
 
 bool task_validate_user_range(uintptr_t base, size_t length) {
@@ -919,10 +1253,17 @@ static int task_seed_slot(task_slot_t *slot,
     }
 
     node = task_resolve_path_internal(vfs_root(), path);
-    if (!node || !vfs_is_file(node) || !task_is_executable_node(node)) {
-        console_printf("[spawn] VFS fail for '%s': node=%d is_file=%d exec=%d\n",
-                       path, !!node, node ? vfs_is_file(node) : 0, node ? task_is_executable_node(node) : 0);
-        return LERR_NOENT;
+    {
+        const task_state_t *check_state = parent_state ? parent_state : &current_task;
+        if (!node || !vfs_is_file(node)) {
+            console_printf("[spawn] VFS fail for '%s': node=%d is_file=%d exec=%d\n",
+                           path, !!node, node ? vfs_is_file(node) : 0, node ? task_is_executable_node(node) : 0);
+            return LERR_NOENT;
+        }
+        if (!task_node_access_allowed_for_state(check_state, node, LINUX_X_OK) || !task_is_executable_node(node)) {
+            console_printf("[spawn] VFS permission fail for '%s'\n", path);
+            return LERR_ACCES;
+        }
     }
 
     pd = page_directory_create();
@@ -992,6 +1333,17 @@ static int task_seed_slot(task_slot_t *slot,
     current_task.brk = image.image_end;
     current_task.brk_limit = USER_MMAP_BASE; /* Use mmap base as brk limit */
     current_task.pid = next_pid++;
+    if (parent_state) {
+        current_task.uid = parent_state->uid;
+        current_task.gid = parent_state->gid;
+        current_task.euid = parent_state->euid;
+        current_task.egid = parent_state->egid;
+        task_copy_string_field(current_task.login_name, sizeof(current_task.login_name), parent_state->login_name);
+        task_copy_string_field(current_task.home_path, sizeof(current_task.home_path), parent_state->home_path);
+        task_copy_string_field(current_task.shell_path, sizeof(current_task.shell_path), parent_state->shell_path);
+    } else {
+        task_apply_default_identity(&current_task);
+    }
     current_task.active = true;
     current_task.page_directory = pd;
     {
@@ -1303,6 +1655,40 @@ int task_run_argv_alongside(const task_state_t *parent_state, const char *path, 
     return exit_code;
 }
 
+static bool task_parent_path(const char *path, char *parent, size_t parent_size) {
+    const char *slash;
+    size_t len;
+
+    if (!path || !parent || parent_size == 0) {
+        return false;
+    }
+
+    slash = strrchr(path, '/');
+    if (!slash) {
+        const char *cwd = current_task.cwd_path[0] ? current_task.cwd_path : "/";
+        strncpy(parent, cwd, parent_size - 1);
+        parent[parent_size - 1] = '\0';
+        return true;
+    }
+
+    if (slash == path) {
+        if (parent_size < 2) {
+            return false;
+        }
+        parent[0] = '/';
+        parent[1] = '\0';
+        return true;
+    }
+
+    len = (size_t)(slash - path);
+    if (len >= parent_size) {
+        len = parent_size - 1;
+    }
+    memcpy(parent, path, len);
+    parent[len] = '\0';
+    return true;
+}
+
 bool path_is_in_tmp(const char *path) {
     return strncmp(path, "/tmp/", 5) == 0 || strcmp(path, "/tmp") == 0;
 }
@@ -1334,7 +1720,11 @@ int task_open_relative(int dirfd, const char *path, int flags, int mode) {
 
     if (!node && want_create) {
         if (path_is_in_tmp(path)) {
-            node = vfs_create_ramfile(path);
+            u32 create_mode = (u32)(mode & 07777);
+            if (create_mode == 0) {
+                create_mode = 0644u;
+            }
+            node = vfs_create_ramfile(path, create_mode, current_task.uid, current_task.gid);
         }
         if (!node) {
             return LERR_NOENT;
@@ -1360,6 +1750,10 @@ int task_open_relative(int dirfd, const char *path, int flags, int mode) {
     }
     if (strcmp(node_path, "/dev/keyboard") == 0) {
         return task_install_fd(TASK_FD_KEYBOARD, node, flags);
+    }
+
+    if (!task_node_access_allowed(node, want_write ? LINUX_W_OK : LINUX_R_OK)) {
+        return LERR_ACCES;
     }
 
     if (want_write && !vfs_node_is_ramfile(node)) {
@@ -1660,10 +2054,7 @@ int task_access(const char *path, int mode) {
         }
         return LERR_NOENT;
     }
-    if ((mode & LINUX_W_OK) != 0) {
-        return LERR_ACCES;
-    }
-    if ((mode & LINUX_X_OK) != 0 && !vfs_is_dir(node) && !task_is_executable_node(node)) {
+    if (!task_node_access_allowed(node, mode)) {
         return LERR_ACCES;
     }
     return 0;
@@ -1808,9 +2199,169 @@ int task_chdir(const char *path) {
     if (!vfs_is_dir(node)) {
         return LERR_NOTDIR;
     }
+    if (!task_node_access_allowed(node, LINUX_X_OK)) {
+        return LERR_ACCES;
+    }
 
     current_task.cwd = node;
     strncpy(current_task.cwd_path, vfs_path(node), sizeof(current_task.cwd_path) - 1);
+    return 0;
+}
+
+int task_chmod(const char *path, u32 mode) {
+    const vfs_node_t *node = task_resolve_path_internal(current_task.cwd, path);
+    vfs_stat_t stat;
+
+    if (!node || !vfs_stat_node(node, &stat)) {
+        return LERR_NOENT;
+    }
+    if (current_task.euid != 0u && current_task.euid != stat.uid) {
+        return LERR_PERM;
+    }
+    return vfs_chmod_path(vfs_path(node), mode);
+}
+
+int task_mkdir(const char *path, u32 mode) {
+    char parent_path[VFS_PATH_MAX];
+    const vfs_node_t *parent;
+    u32 dir_mode = mode & 07777u;
+    const task_state_t *state = &current_task;
+
+    if (!path || !*path) {
+        return LERR_INVAL;
+    }
+    if (dir_mode == 0) {
+        dir_mode = 0777u;
+    }
+
+    if (!task_parent_path(path, parent_path, sizeof(parent_path))) {
+        return LERR_INVAL;
+    }
+    parent = task_resolve_path_internal(current_task.cwd, parent_path);
+    if (!parent || !vfs_is_dir(parent)) {
+        return LERR_NOENT;
+    }
+    if (!task_node_access_allowed_for_state(state, parent, LINUX_W_OK | LINUX_X_OK)) {
+        return LERR_ACCES;
+    }
+
+    if (vfs_mkdir(path, dir_mode, current_task.uid, current_task.gid) != 0) {
+        return LERR_EXIST;
+    }
+    return 0;
+}
+
+int task_unlink(const char *path) {
+    char parent_path[VFS_PATH_MAX];
+    const vfs_node_t *parent;
+    const vfs_node_t *node;
+    vfs_stat_t stat;
+
+    if (!path || !*path) {
+        return LERR_INVAL;
+    }
+
+    node = task_resolve_path_internal(current_task.cwd, path);
+    if (!node || !vfs_stat_node(node, &stat)) {
+        return LERR_NOENT;
+    }
+
+    if (!task_parent_path(path, parent_path, sizeof(parent_path))) {
+        return LERR_INVAL;
+    }
+    parent = task_resolve_path_internal(current_task.cwd, parent_path);
+    if (!parent || !vfs_is_dir(parent)) {
+        return LERR_NOENT;
+    }
+    if (!task_node_access_allowed_for_state(&current_task, parent, LINUX_W_OK | LINUX_X_OK)) {
+        return LERR_ACCES;
+    }
+    if (current_task.euid != 0u && current_task.euid != stat.uid) {
+        return LERR_PERM;
+    }
+
+    if (vfs_unlink_ramfile(vfs_path(node)) != 0) {
+        return LERR_PERM;
+    }
+    return 0;
+}
+
+int task_link(const char *oldpath, const char *newpath) {
+    char parent_path[VFS_PATH_MAX];
+    const vfs_node_t *parent;
+    const vfs_node_t *oldnode;
+    vfs_stat_t stat;
+
+    if (!oldpath || !newpath || !*oldpath || !*newpath) {
+        return LERR_INVAL;
+    }
+
+    oldnode = task_resolve_path_internal(current_task.cwd, oldpath);
+    if (!oldnode || !vfs_stat_node(oldnode, &stat)) {
+        return LERR_NOENT;
+    }
+    if (current_task.euid != 0u && current_task.euid != stat.uid) {
+        return LERR_PERM;
+    }
+
+    if (!task_parent_path(newpath, parent_path, sizeof(parent_path))) {
+        return LERR_INVAL;
+    }
+    parent = task_resolve_path_internal(current_task.cwd, parent_path);
+    if (!parent || !vfs_is_dir(parent)) {
+        return LERR_NOENT;
+    }
+    if (!task_node_access_allowed_for_state(&current_task, parent, LINUX_W_OK | LINUX_X_OK)) {
+        return LERR_ACCES;
+    }
+
+    if (vfs_link_ramfile(vfs_path(oldnode), newpath) != 0) {
+        return LERR_PERM;
+    }
+
+    return 0;
+}
+
+int task_rename(const char *oldpath, const char *newpath) {
+    char parent_path[VFS_PATH_MAX];
+    const vfs_node_t *parent;
+    const vfs_node_t *oldnode;
+    vfs_stat_t stat;
+
+    if (!oldpath || !newpath || !*oldpath || !*newpath) {
+        return LERR_INVAL;
+    }
+
+    oldnode = task_resolve_path_internal(current_task.cwd, oldpath);
+    if (!oldnode || !vfs_stat_node(oldnode, &stat)) {
+        return LERR_NOENT;
+    }
+    if (current_task.euid != 0u && current_task.euid != stat.uid) {
+        return LERR_PERM;
+    }
+
+    if (!task_parent_path(oldpath, parent_path, sizeof(parent_path))) {
+        return LERR_INVAL;
+    }
+    parent = task_resolve_path_internal(current_task.cwd, parent_path);
+    if (!parent || !vfs_is_dir(parent) ||
+        !task_node_access_allowed_for_state(&current_task, parent, LINUX_W_OK | LINUX_X_OK)) {
+        return LERR_ACCES;
+    }
+
+    if (!task_parent_path(newpath, parent_path, sizeof(parent_path))) {
+        return LERR_INVAL;
+    }
+    parent = task_resolve_path_internal(current_task.cwd, parent_path);
+    if (!parent || !vfs_is_dir(parent) ||
+        !task_node_access_allowed_for_state(&current_task, parent, LINUX_W_OK | LINUX_X_OK)) {
+        return LERR_ACCES;
+    }
+
+    if (vfs_rename_ramfile(vfs_path(oldnode), newpath) != 0) {
+        return LERR_PERM;
+    }
+
     return 0;
 }
 
@@ -2022,7 +2573,7 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
     if (!node || !vfs_is_file(node)) {
         return LERR_NOENT;
     }
-    if (!task_is_executable_node(node)) {
+    if (!task_node_access_allowed(node, LINUX_X_OK) || !task_is_executable_node(node)) {
         return LERR_ACCES;
     }
 
@@ -2513,14 +3064,6 @@ void task_timer_tick(registers_t *regs) {
 
     *regs = next->regs;
 
-    /* Safety net: if a user task has all-zero GPRs, force non-zero values to
-     * prevent switch-table lookups from picking index 0 and crashing in .rodata
-     * (xnx-compositor #GP at 0x0307290c, CSWTCH.9+0xc byte 0xFB=STI).
-     * The compositor's -O2 code keeps all GPRs zero between syscalls; the kernel
-     * faithfully saves/restores these zeros. Seeding each GPR with EIP ensures
-     * any register used as a table index is non-zero without changing program
-     * semantics (all registers are undefined per ABI at task start, and the
-     * code demonstrably does not depend on register values). */
     if ((regs->cs & 3u) == 3u && regs->eip >= USER_BASE + 0x100 &&
         regs->eip < USER_LIMIT &&
         regs->eax == 0 && regs->ebx == 0 && regs->ecx == 0 &&

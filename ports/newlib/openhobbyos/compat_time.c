@@ -114,18 +114,6 @@ int clock_nanosleep(clockid_t clock_id, int flags, const struct timespec *rqtp, 
     return 0;
 }
 
-time_t time(time_t *timer) {
-    struct timeval tv;
-
-    if (gettimeofday(&tv, NULL) != 0) {
-        return (time_t) -1;
-    }
-    if (timer) {
-        *timer = tv.tv_sec;
-    }
-    return tv.tv_sec;
-}
-
 int usleep(useconds_t usec) {
     struct timespec req;
 

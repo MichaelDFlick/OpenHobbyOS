@@ -307,16 +307,16 @@ int unlink(const char *path) {
     return oh_set_errno_result(oh_syscall1(OHOS_SYS_UNLINK, (int) path));
 }
 
+int rmdir(const char *path) {
+    return oh_set_errno_result(oh_syscall1(OHOS_SYS_UNLINK, (int) path));
+}
+
 int mkdir(const char *path, mode_t mode) {
     return oh_set_errno_result(oh_syscall2(OHOS_SYS_MKDIR, (int) path, (int) mode));
 }
 
 int link(const char *existing, const char *new_link) {
     return oh_set_errno_result(oh_syscall2(LINUX_SYS_LINK, (int) existing, (int) new_link));
-}
-
-int rename(const char *old_name, const char *new_name) {
-    return oh_set_errno_result(oh_syscall2(LINUX_SYS_RENAME, (int) old_name, (int) new_name));
 }
 
 pid_t wait(int *status) {

@@ -33,6 +33,7 @@ mkdir -p \
 PIXMAN_CFLAGS=($("$PKG_CONFIG" --cflags pixman-1))
 PIXMAN_LIBS=($("$PKG_CONFIG" --libs pixman-1))
 LODEPNG_CFLAGS=($("$PKG_CONFIG" --cflags lodepng))
+NEWLIB_LIBDIR="$SYSROOT/i686-elf/lib"
 
 COMMON_CFLAGS=(
     --sysroot="$SYSROOT"
@@ -70,6 +71,8 @@ build_compositor() {
         -Wl,--start-group \
         "${PIXMAN_LIBS[@]}" \
         -llodepng \
+        -L"$NEWLIB_LIBDIR" \
+        -lm \
         -lc \
         -lgcc \
         -Wl,--end-group \

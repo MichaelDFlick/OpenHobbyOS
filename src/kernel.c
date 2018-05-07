@@ -15,6 +15,7 @@
 #include "power.h"
 #include "rtl8139.h"
 #include "task.h"
+#include "thread.h"
 #include "vfs.h"
 
 static bool kernel_path_is_executable(const char *path) {
@@ -100,8 +101,11 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     pci_scan();
     netdev_init();
     rtl8139_init();
+    virtio_net_init();
 
     task_init();
+    thread_init();
+    workqueue_init();
     fpu_init();
     start_sdp_compositor();
 

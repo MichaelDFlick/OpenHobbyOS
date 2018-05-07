@@ -11,6 +11,7 @@
 #include "socket.h"
 #include "string.h"
 #include "task.h"
+#include "thread.h"
 #include "vfs.h"
 #include "memory.h"
 #include "pit.h"
@@ -509,19 +510,87 @@ static int sys_fstat64(registers_t *regs) {
 }
 
 static int sys_getuid32(UNUSED registers_t *regs) {
-    return 0;
+    return (int)task_state()->uid;
 }
 
 static int sys_getgid32(UNUSED registers_t *regs) {
-    return 0;
+    return (int)task_state()->gid;
 }
 
 static int sys_geteuid32(UNUSED registers_t *regs) {
-    return 0;
+    return (int)task_state()->euid;
 }
 
 static int sys_getegid32(UNUSED registers_t *regs) {
-    return 0;
+    return (int)task_state()->egid;
+}
+
+static int sys_setuid32(registers_t *regs) {
+    u32 uid = regs->ebx;
+    const task_state_t *state = task_state();
+
+    if (state->euid != 0u && uid != state->uid && uid != state->euid) {
+        return LERR_PERM;
+    }
+
+    return task_set_credentials(uid, state->gid, uid, state->egid);
+}
+
+static int sys_setgid32(registers_t *regs) {
+    u32 gid = regs->ebx;
+    const task_state_t *state = task_state();
+
+    if (state->euid != 0u && gid != state->gid && gid != state->egid) {
+        return LERR_PERM;
+    }
+
+    return task_set_credentials(state->uid, gid, state->euid, gid);
+}
+
+static int sys_seteuid32(registers_t *regs) {
+    u32 euid = regs->ebx;
+    const task_state_t *state = task_state();
+
+    if (state->euid != 0u && euid != state->uid && euid != state->euid) {
+        return LERR_PERM;
+    }
+
+    return task_set_credentials(state->uid, state->gid, euid, state->egid);
+}
+
+static int sys_setegid32(registers_t *regs) {
+    u32 egid = regs->ebx;
+    const task_state_t *state = task_state();
+
+    if (state->euid != 0u && egid != state->gid && egid != state->egid) {
+        return LERR_PERM;
+    }
+
+    return task_set_credentials(state->uid, state->gid, state->euid, egid);
+}
+
+static int sys_auth(registers_t *regs) {
+    const char *username = (const char *)(uintptr_t)regs->ebx;
+    const char *password = (const char *)(uintptr_t)regs->ecx;
+    char name[64];
+    char pass[64];
+
+    if (!task_copy_string_from_user(name, sizeof(name), username) ||
+        !task_copy_string_from_user(pass, sizeof(pass), password)) {
+        return LERR_FAULT;
+    }
+
+    return task_authenticate_session(name, pass);
+}
+
+static int sys_chmod(registers_t *regs) {
+    char path[SYSCALL_PATH_MAX];
+
+    if (!task_copy_string_from_user(path, sizeof(path), (const char *)(uintptr_t)regs->ebx)) {
+        return LERR_FAULT;
+    }
+
+    return task_chmod(path, (u32)regs->ecx);
 }
 
 static int sys_getdents64(registers_t *regs) {
@@ -1083,28 +1152,22 @@ static int sys_oh_unlink(registers_t *regs) {
         return LERR_FAULT;
     }
 
-    /* Support unlink in /tmp for ramfiles */
-    if (path_is_in_tmp(path)) {
-        return vfs_unlink_ramfile(path) == 0 ? 0 : LERR_NOENT;
-    }
-
     if (socket_unlink_path(path)) {
         return 0;
     }
 
-    return LERR_PERM;
+    return task_unlink(path);
 }
 
 static int sys_oh_mkdir(registers_t *regs) {
     char path[SYSCALL_PATH_MAX];
-
-    (void)regs->ecx;
+    u32 mode = (u32)regs->ecx;
 
     if (!task_copy_string_from_user(path, sizeof(path), (const char *)(uintptr_t)regs->ebx)) {
         return LERR_FAULT;
     }
 
-    return vfs_mkdir(path);
+    return task_mkdir(path, mode);
 }
 
 static int sys_link(registers_t *regs) {
@@ -1118,29 +1181,7 @@ static int sys_link(registers_t *regs) {
         return LERR_FAULT;
     }
 
-    /* Only support link within /tmp for now */
-    if (!path_is_in_tmp(oldpath) || !path_is_in_tmp(newpath)) {
-        return LERR_ROFS;
-    }
-
-    /* Check if source exists and is a ramfile */
-    const vfs_node_t *oldnode = vfs_resolve(NULL, oldpath);
-    if (!oldnode || !vfs_node_is_ramfile(oldnode)) {
-        return LERR_NOENT;
-    }
-
-    /* Check if destination already exists */
-    const vfs_node_t *newnode = vfs_resolve(NULL, newpath);
-    if (newnode) {
-        return LERR_EXIST;
-    }
-
-    /* Perform the link */
-    if (vfs_link_ramfile(oldpath, newpath) != 0) {
-        return LERR_IO;
-    }
-
-    return 0;
+    return task_link(oldpath, newpath);
 }
 
 static int sys_rename(registers_t *regs) {
@@ -1154,15 +1195,7 @@ static int sys_rename(registers_t *regs) {
         return LERR_FAULT;
     }
 
-    if (!path_is_in_tmp(oldpath) || !path_is_in_tmp(newpath)) {
-        return LERR_ROFS;
-    }
-
-    if (vfs_rename_ramfile(oldpath, newpath) == 0) {
-        return 0;
-    }
-
-    return LERR_NOENT;
+    return task_rename(oldpath, newpath);
 }
 
 static int sys_dup(registers_t *regs) {
@@ -1353,16 +1386,25 @@ static int sys_pipe(registers_t *regs) {
 }
 
 static int sys_oh_reboot(UNUSED registers_t *regs) {
+    if (task_state()->euid != 0u) {
+        return LERR_PERM;
+    }
     console_write("reboot syscall invoked\n");
     power_reboot();
     return 0;
 }
 
 static int sys_oh_shutdown(UNUSED registers_t *regs) {
+    if (task_state()->euid != 0u) {
+        return LERR_PERM;
+    }
     return power_shutdown() ? 1 : 0;
 }
 
 static int sys_oh_suspend(UNUSED registers_t *regs) {
+    if (task_state()->euid != 0u) {
+        return LERR_PERM;
+    }
     return power_suspend() ? 1 : 0;
 }
 
@@ -1390,6 +1432,64 @@ static int sys_oh_ticks(UNUSED registers_t *regs) {
 
 static int sys_oh_tickfreq(UNUSED registers_t *regs) {
     return (int)pit_frequency();
+}
+
+static int sys_oh_thread_create(registers_t *regs) {
+    u32 *tid_out = (u32 *)(uintptr_t)regs->ebx;
+    thread_attr_t *attr = (thread_attr_t *)(uintptr_t)regs->ecx;
+    u32 (*start_func)(void*) = (u32 (*)(void*))(uintptr_t)regs->edx;
+    void *arg = (void *)(uintptr_t)regs->esi;
+    u32 tid;
+    int result;
+
+    if (!task_validate_user_range((uintptr_t)start_func, 1)) {
+        return LERR_FAULT;
+    }
+    if (tid_out && !task_validate_user_range((uintptr_t)tid_out, sizeof(u32))) {
+        return LERR_FAULT;
+    }
+    if (attr && !task_validate_user_range((uintptr_t)attr, sizeof(thread_attr_t))) {
+        return LERR_FAULT;
+    }
+
+    result = thread_create(&tid, attr, start_func, arg);
+    if (result < 0) return result;
+
+    if (tid_out && !task_copy_to_user(tid_out, &tid, sizeof(tid))) {
+        return LERR_FAULT;
+    }
+    return (int)tid;
+}
+
+static int sys_oh_thread_exit(registers_t *regs) {
+    int exit_code = (int)regs->ebx;
+    thread_exit(exit_code);
+    return 0;
+}
+
+static int sys_oh_thread_join(registers_t *regs) {
+    u32 tid = regs->ebx;
+    void *status_ptr = (void *)(uintptr_t)regs->ecx;
+
+    /* Reuse the process waitpid mechanism: threads are task_slot entries
+     * whose parent_pid matches the joining process. The status format
+     * follows Linux waitpid convention: (exit_code & 0xff) << 8. */
+    return task_waitpid_from_user((int)tid, status_ptr, 0, regs);
+}
+
+static int sys_oh_thread_detach(registers_t *regs) {
+    return thread_detach(regs->ebx);
+}
+
+static int sys_oh_thread_yield(registers_t *regs) {
+    task_yield_current(regs, 0);
+    return 0;
+}
+
+static int sys_oh_thread_self(registers_t *regs) {
+    (void)regs;
+    const task_state_t *state = task_state();
+    return state ? (int)state->pid : 0;
 }
 
 int syscall_dispatch(registers_t *regs) {
@@ -1489,6 +1589,24 @@ int syscall_dispatch(registers_t *regs) {
             break;
         case LINUX_SYS_GETEGID32:
             result = sys_getegid32(regs);
+            break;
+        case OHOS_SYS_SETUID:
+            result = sys_setuid32(regs);
+            break;
+        case OHOS_SYS_SETGID:
+            result = sys_setgid32(regs);
+            break;
+        case OHOS_SYS_SETEUID:
+            result = sys_seteuid32(regs);
+            break;
+        case OHOS_SYS_SETEGID:
+            result = sys_setegid32(regs);
+            break;
+        case OHOS_SYS_AUTH:
+            result = sys_auth(regs);
+            break;
+        case OHOS_SYS_CHMOD:
+            result = sys_chmod(regs);
             break;
         case LINUX_SYS_GETDENTS64:
             result = sys_getdents64(regs);
@@ -1591,6 +1709,24 @@ int syscall_dispatch(registers_t *regs) {
             break;
         case OHOS_SYS_TICKFREQ:
             result = sys_oh_tickfreq(regs);
+            break;
+        case OHOS_SYS_THREAD_CREATE:
+            result = sys_oh_thread_create(regs);
+            break;
+        case OHOS_SYS_THREAD_EXIT:
+            result = sys_oh_thread_exit(regs);
+            break;
+        case OHOS_SYS_THREAD_JOIN:
+            result = sys_oh_thread_join(regs);
+            break;
+        case OHOS_SYS_THREAD_DETACH:
+            result = sys_oh_thread_detach(regs);
+            break;
+        case OHOS_SYS_THREAD_YIELD:
+            result = sys_oh_thread_yield(regs);
+            break;
+        case OHOS_SYS_THREAD_SELF:
+            result = sys_oh_thread_self(regs);
             break;
         default:
             result = LERR_INVAL;

@@ -7,6 +7,8 @@
 #define HIST_MAX    16
 #define THEME_FILE  "/etc/shell-colors.jsonc"
 #define MAX(x,y)    ((x)>(y)?(x):(y))
+#define GOSH_ERR_PERM  (-1)
+#define GOSH_ERR_ACCES (-13)
 
 struct gosh_theme {
     int user, host, path, symbol, error, success, default_c, warning, title;
@@ -19,6 +21,11 @@ static char **g_envp;
 static char g_history[HIST_MAX][LINE_MAX];
 static int g_hist_count;
 static int g_hist_pos;
+static char g_session_user[32];
+static char g_session_home[PATH_MAX];
+static char g_session_shell[PATH_MAX];
+static int g_logged_in;
+static int g_request_relogin;
 
 static int read_byte(void) {
     unsigned char ch = 0;
@@ -119,10 +126,10 @@ static unsigned int emit_str(char *buf, const char *s) {
 }
 
 static void show_prompt(void) {
-    const char *user = env_get("USER");
-    if (!user) user = "root";
+    const char *user = g_logged_in && g_session_user[0] ? g_session_user : "root";
     const char *host = env_get("HOSTNAME");
     if (!host) host = "openhobby";
+    int is_root = (u_strcmp(user, "root") == 0);
 
     if (!sys_getcwd(g_cwd, sizeof(g_cwd)))
         u_strcpy(g_cwd, "?");
@@ -158,7 +165,7 @@ static void show_prompt(void) {
     pos += emit_sgr(prom + pos, g_thm.path);
     pos += emit_str(prom + pos, cwd_short);
     pos += emit_sgr(prom + pos, g_thm.symbol);
-    prom[pos++] = ' '; prom[pos++] = '#'; prom[pos++] = ' ';
+    prom[pos++] = ' '; prom[pos++] = (char)(is_root ? '#' : '$'); prom[pos++] = ' ';
     pos += emit_sgr(prom + pos, 0);
 
     write_buf(prom, pos);
@@ -173,62 +180,291 @@ static void hist_add(const char *line) {
     g_hist_pos = g_hist_count;
 }
 
-static void hist_draw(const char *buf, int pos) {
-    write_str("\r\e[K");
-    show_prompt();
-    for (int i = 0; i < pos; i++) write_ch(buf[i]);
+static void write_decimal(char *buf, unsigned int *pos, unsigned int value) {
+    char tmp[16];
+    unsigned int used = 0;
+
+    if (value == 0) {
+        buf[(*pos)++] = '0';
+        return;
+    }
+
+    while (value && used < sizeof(tmp)) {
+        tmp[used++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+
+    while (used) {
+        buf[(*pos)++] = tmp[--used];
+    }
 }
 
-static int read_line(char *buf, int max) {
+static void write_cursor_left(unsigned int count) {
+    char seq[16];
+    unsigned int pos = 0;
+
+    if (count == 0) {
+        return;
+    }
+
+    seq[pos++] = '\e';
+    seq[pos++] = '[';
+    write_decimal(seq, &pos, count);
+    seq[pos++] = 'D';
+    write_buf(seq, pos);
+}
+
+static void redraw_shell_line(const char *buf, int len, int cursor) {
+    write_str("\r\e[K");
+    show_prompt();
+    if (len > 0) {
+        write_buf(buf, (unsigned int)len);
+    }
+    if (cursor < len) {
+        write_cursor_left((unsigned int)(len - cursor));
+    }
+}
+
+struct prompt_redraw_ctx {
+    const char *prompt;
+    int echo;
+};
+
+static void redraw_prompt_line(const char *prompt, const char *buf, int len, int cursor, int echo) {
+    write_str("\r\e[K");
+    write_str(prompt);
+    if (len > 0) {
+        if (echo) {
+            write_buf(buf, (unsigned int)len);
+        } else {
+            for (int i = 0; i < len; i++) {
+                write_ch('*');
+            }
+        }
+    }
+    if (cursor < len) {
+        write_cursor_left((unsigned int)(len - cursor));
+    }
+}
+
+static void shell_set_session(const char *username) {
+    if (!username || !*username) {
+        username = "root";
+    }
+
+    u_strcpy(g_session_user, username);
+    if (u_strcmp(username, "root") == 0) {
+        u_strcpy(g_session_home, "/root");
+        u_strcpy(g_session_shell, "/bin/gosh");
+    } else {
+        u_strcpy(g_session_home, "/home/user");
+        u_strcpy(g_session_shell, "/bin/gosh");
+    }
+    g_logged_in = 1;
+}
+
+static int read_line_common(char *buf, int max, int echo, int use_history, void (*redraw)(const char *, int, int, void *), void *redraw_ctx) {
     int pos = 0;
+    int cursor = 0;
+    int history_index = g_hist_count;
+    int editing_history = 0;
+
+    if (!buf || max < 2) {
+        return -1;
+    }
+
     buf[0] = '\0';
+    redraw(buf, pos, cursor, redraw_ctx);
     for (;;) {
         int ch = read_byte();
-        if (ch == -2) { sys_sched_yield(); continue; }
-        if (ch < 0) return -1;
+        if (ch == -2) {
+            sys_sched_yield();
+            continue;
+        }
+        if (ch < 0) {
+            return -1;
+        }
         if (ch == '\n' || ch == '\r') {
             write_ch('\n');
             buf[pos] = '\0';
-            hist_add(buf);
+            if (use_history) {
+                hist_add(buf);
+            }
             return pos;
         }
         if (ch == 127 || ch == 8) {
-            if (pos > 0) { pos--; write_str("\b \b"); }
+            if (cursor > 0) {
+                for (int i = cursor - 1; i < pos - 1; ++i) {
+                    buf[i] = buf[i + 1];
+                }
+                cursor--;
+                pos--;
+                buf[pos] = '\0';
+                if (use_history && editing_history) {
+                    editing_history = 0;
+                }
+                redraw(buf, pos, cursor, redraw_ctx);
+            }
+            continue;
+        }
+        if (ch == 3) {
+            buf[0] = '\0';
+            pos = 0;
+            cursor = 0;
+            editing_history = 0;
+            redraw(buf, pos, cursor, redraw_ctx);
+            continue;
+        }
+        if (ch == 21) {
+            pos = 0;
+            cursor = 0;
+            buf[0] = '\0';
+            editing_history = 0;
+            redraw(buf, pos, cursor, redraw_ctx);
+            continue;
+        }
+        if (ch == 11) {
+            pos = cursor;
+            buf[pos] = '\0';
+            editing_history = 0;
+            redraw(buf, pos, cursor, redraw_ctx);
+            continue;
+        }
+        if (ch == 1) {
+            cursor = 0;
+            redraw(buf, pos, cursor, redraw_ctx);
+            continue;
+        }
+        if (ch == 5) {
+            cursor = pos;
+            redraw(buf, pos, cursor, redraw_ctx);
             continue;
         }
         if (ch == 27) {
             int n1 = read_byte();
-            if (n1 == '[') {
+            if (n1 == -2) {
+                continue;
+            }
+            if (n1 == '[' || n1 == 'O') {
                 int n2 = read_byte();
-                if (n2 == 'A') {
-                    if (g_hist_pos > 0 && g_hist_count > 0) {
-                        g_hist_pos--;
-                        int idx = g_hist_pos % HIST_MAX;
-                        u_strcpy(buf, g_history[idx]);
-                        pos = u_strlen(buf);
-                        hist_draw(buf, pos);
+                if (n2 == -2) {
+                    continue;
+                }
+                if (n2 == 'A' && use_history) {
+                    if (g_hist_count > 0 && history_index > 0) {
+                        history_index--;
+                        u_strcpy(buf, g_history[history_index % HIST_MAX]);
+                        pos = (int)u_strlen(buf);
+                        cursor = pos;
+                        editing_history = 1;
+                        redraw(buf, pos, cursor, redraw_ctx);
                     }
-                } else if (n2 == 'B') {
-                    if (g_hist_pos < g_hist_count - 1) {
-                        g_hist_pos++;
-                        int idx = g_hist_pos % HIST_MAX;
-                        u_strcpy(buf, g_history[idx]);
-                        pos = u_strlen(buf);
-                        hist_draw(buf, pos);
-                    } else if (g_hist_pos == g_hist_count - 1) {
-                        g_hist_pos = g_hist_count;
-                        buf[0] = '\0'; pos = 0;
-                        hist_draw(buf, pos);
+                    continue;
+                }
+                if (n2 == 'B' && use_history) {
+                    if (g_hist_count > 0 && history_index < g_hist_count - 1) {
+                        history_index++;
+                        u_strcpy(buf, g_history[history_index % HIST_MAX]);
+                        pos = (int)u_strlen(buf);
+                        cursor = pos;
+                        editing_history = 1;
+                        redraw(buf, pos, cursor, redraw_ctx);
+                    } else if (history_index == g_hist_count - 1) {
+                        history_index = g_hist_count;
+                        pos = 0;
+                        cursor = 0;
+                        buf[0] = '\0';
+                        editing_history = 0;
+                        redraw(buf, pos, cursor, redraw_ctx);
                     }
+                    continue;
+                }
+                if (n2 == 'C') {
+                    if (cursor < pos) {
+                        cursor++;
+                        redraw(buf, pos, cursor, redraw_ctx);
+                    }
+                    continue;
+                }
+                if (n2 == 'D') {
+                    if (cursor > 0) {
+                        cursor--;
+                        redraw(buf, pos, cursor, redraw_ctx);
+                    }
+                    continue;
+                }
+                if (n2 == 'H') {
+                    cursor = 0;
+                    redraw(buf, pos, cursor, redraw_ctx);
+                    continue;
+                }
+                if (n2 == 'F') {
+                    cursor = pos;
+                    redraw(buf, pos, cursor, redraw_ctx);
+                    continue;
+                }
+                if (n2 == '3') {
+                    int n3 = read_byte();
+                    if (n3 == '~' && cursor < pos) {
+                        for (int i = cursor; i < pos - 1; ++i) {
+                            buf[i] = buf[i + 1];
+                        }
+                        pos--;
+                        buf[pos] = '\0';
+                        editing_history = 0;
+                        redraw(buf, pos, cursor, redraw_ctx);
+                    }
+                    continue;
                 }
             }
             continue;
         }
-        if (pos >= max - 1) continue;
-        if (ch < 32) continue;
-        buf[pos++] = (char)ch;
-        write_ch((char)ch);
+        if (ch < 32) {
+            continue;
+        }
+        if (pos >= max - 1) {
+            continue;
+        }
+
+        if (cursor == pos) {
+            buf[pos++] = (char)ch;
+            cursor = pos;
+            buf[pos] = '\0';
+            if (echo) {
+                write_ch((char)ch);
+            }
+        } else {
+            for (int i = pos; i > cursor; --i) {
+                buf[i] = buf[i - 1];
+            }
+            buf[cursor] = (char)ch;
+            pos++;
+            cursor++;
+            buf[pos] = '\0';
+            editing_history = 0;
+            redraw(buf, pos, cursor, redraw_ctx);
+            continue;
+        }
     }
+}
+
+static void redraw_shell_adapter(const char *buf, int len, int cursor, void *ctx) {
+    (void)ctx;
+    redraw_shell_line(buf, len, cursor);
+}
+
+static void redraw_prompt_adapter(const char *buf, int len, int cursor, void *ctx) {
+    const struct prompt_redraw_ctx *prompt = (const struct prompt_redraw_ctx *)ctx;
+    redraw_prompt_line(prompt->prompt, buf, len, cursor, prompt->echo);
+}
+
+static int read_line(char *buf, int max) {
+    return read_line_common(buf, max, 1, 1, redraw_shell_adapter, NULL);
+}
+
+static int read_prompt_line(const char *prompt, char *buf, int max, int echo) {
+    struct prompt_redraw_ctx ctx = { prompt, echo };
+    return read_line_common(buf, max, echo, 0, redraw_prompt_adapter, &ctx);
 }
 
 static void skip_ws(const char **p) {
@@ -277,7 +513,13 @@ static int find_in_path(const char *cmd, char *resolved, unsigned int size) {
         unsigned int i = 0;
         while (cmd[i] && i + 1 < size) { resolved[i] = cmd[i]; i++; }
         resolved[i] = '\0';
-        return 0;
+        {
+            struct linux_stat64 st;
+            if (sys_stat64(resolved, &st) != 0) {
+                return -1;
+            }
+        }
+        return (sys_access(resolved, LINUX_X_OK) == 0) ? 0 : GOSH_ERR_ACCES;
     }
 
     const char *path = env_get("PATH");
@@ -305,8 +547,12 @@ static int find_in_path(const char *cmd, char *resolved, unsigned int size) {
         resolved[si] = '\0';
 
         struct linux_stat64 st;
-        if (sys_stat64(resolved, &st) == 0 && (st.st_mode & 0111))
-            return 0;
+        if (sys_stat64(resolved, &st) == 0) {
+            if (sys_access(resolved, LINUX_X_OK) == 0) {
+                return 0;
+            }
+            return GOSH_ERR_ACCES;
+        }
 
         if (!sep) break;
         start = end + 1;
@@ -316,7 +562,7 @@ static int find_in_path(const char *cmd, char *resolved, unsigned int size) {
 
 static int builtin_cd(int argc, const char **argv) {
     (void)argc;
-    const char *target = argv[1] ? argv[1] : "/";
+    const char *target = argv[1] ? argv[1] : (g_session_home[0] ? g_session_home : "/");
     if (sys_chdir(target) < 0) {
         write_str("gosh: cd: "); write_str(target);
         write_str(": No such file or directory\n");
@@ -343,6 +589,10 @@ static int builtin_help(int argc, const char **argv) {
     write_str("  exit [code]  Exit the shell\n");
     write_str("  help         Display this help\n");
     write_str("  history      Show command history\n");
+    write_str("  id           Show current identity\n");
+    write_str("  logout       Return to the login screen\n");
+    write_str("  chmod MODE PATH...  Change file mode\n");
+    write_str("  sudo CMD...  Run a command as root\n");
     write_str("  pwd          Print working directory\n");
     write_str("  export       Print environment variables\n");
     return 0;
@@ -383,6 +633,23 @@ static int builtin_export(int argc, const char **argv) {
     return 1;
 }
 
+static int builtin_id(int argc, const char **argv) {
+    (void)argc; (void)argv;
+    write_str("uid="); u_put_uint((unsigned int)sys_getuid32());
+    write_str(" gid="); u_put_uint((unsigned int)sys_getgid32());
+    write_str(" euid="); u_put_uint((unsigned int)sys_geteuid32());
+    write_str(" egid="); u_put_uint((unsigned int)sys_getegid32());
+    write_str("\n");
+    return 0;
+}
+
+static int builtin_whoami(int argc, const char **argv) {
+    (void)argc; (void)argv;
+    write_str(g_session_user[0] ? g_session_user : "root");
+    write_str("\n");
+    return 0;
+}
+
 static int builtin_history(int argc, const char **argv) {
     (void)argc; (void)argv;
     int start = MAX(0, g_hist_count - HIST_MAX);
@@ -397,6 +664,104 @@ static int builtin_history(int argc, const char **argv) {
     return 0;
 }
 
+static unsigned int parse_octal_mode(const char *text, int *ok) {
+    unsigned int mode = 0;
+
+    if (ok) {
+        *ok = 0;
+    }
+    if (!text || !*text) {
+        return 0;
+    }
+    while (*text) {
+        if (*text < '0' || *text > '7') {
+            return 0;
+        }
+        mode = (mode << 3) | (unsigned int)(*text - '0');
+        text++;
+    }
+    if (ok) {
+        *ok = 1;
+    }
+    return mode;
+}
+
+static int execute_command_argv(int argc, const char **argv);
+
+static int builtin_logout(int argc, const char **argv) {
+    (void)argc; (void)argv;
+    g_request_relogin = 1;
+    return 0;
+}
+
+static int builtin_chmod(int argc, const char **argv) {
+    int ok = 0;
+    unsigned int mode;
+    int failed = 0;
+
+    if (argc < 3) {
+        write_str("chmod: usage: chmod MODE FILE...\n");
+        return 1;
+    }
+
+    mode = parse_octal_mode(argv[1], &ok);
+    if (!ok) {
+        write_str("chmod: invalid mode\n");
+        return 1;
+    }
+
+    for (int i = 2; i < argc; i++) {
+        if (sys_chmod(argv[i], (int)mode) < 0) {
+            write_str("chmod: "); write_str(argv[i]); write_str(": failed\n");
+            failed = 1;
+        }
+    }
+
+    return failed;
+}
+
+static int builtin_sudo(int argc, const char **argv) {
+    char password[64];
+    unsigned int old_uid;
+    unsigned int old_gid;
+    unsigned int old_euid;
+    unsigned int old_egid;
+    int rc;
+
+    if (argc < 2) {
+        write_str("sudo: usage: sudo COMMAND [ARGS...]\n");
+        return 1;
+    }
+
+    if (sys_geteuid32() == 0) {
+        return execute_command_argv(argc - 1, argv + 1);
+    }
+
+    if (read_prompt_line("sudo password for root: ", password, sizeof(password), 0) < 0) {
+        write_str("\nsudo: failed to read password\n");
+        return 1;
+    }
+
+    old_uid = (unsigned int)sys_getuid32();
+    old_gid = (unsigned int)sys_getgid32();
+    old_euid = (unsigned int)sys_geteuid32();
+    old_egid = (unsigned int)sys_getegid32();
+
+    if (sys_auth("root", password) < 0) {
+        write_str("sudo: authentication failed\n");
+        return 1;
+    }
+
+    rc = execute_command_argv(argc - 1, argv + 1);
+
+    sys_setuid(old_uid);
+    sys_setgid(old_gid);
+    sys_seteuid(old_euid);
+    sys_setegid(old_egid);
+
+    return rc;
+}
+
 struct builtin {
     const char *name;
     int (*func)(int argc, const char **argv);
@@ -405,12 +770,17 @@ struct builtin {
 static const struct builtin builtins[] = {
     {"cd",      builtin_cd},
     {"clear",   builtin_clear},
+    {"chmod",   builtin_chmod},
     {"echo",    builtin_echo},
     {"exit",    builtin_exit},
     {"export",  builtin_export},
     {"help",    builtin_help},
     {"history", builtin_history},
     {"pwd",     builtin_pwd},
+    {"id",      builtin_id},
+    {"logout",  builtin_logout},
+    {"sudo",    builtin_sudo},
+    {"whoami",  builtin_whoami},
     {0, 0}
 };
 
@@ -423,12 +793,40 @@ static int run_builtin(const char *name, int argc, const char **argv) {
 static int execute_external(const char *path, const char **argv) {
     int pid = sys_spawn(path, argv);
     if (pid < 0) {
+        if (pid == GOSH_ERR_ACCES || pid == GOSH_ERR_PERM) {
+            write_str("gosh: "); write_str(path); write_str(": permission denied\n");
+            return 126;
+        }
         write_str("gosh: "); write_str(path); write_str(": command not found\n");
         return 127;
     }
     int status = 0;
     if (sys_waitpid(pid, &status, 0) < 0) return 127;
     return status;
+}
+
+static int execute_command_argv(int argc, const char **argv) {
+    if (argc <= 0 || !argv || !argv[0] || !*argv[0]) {
+        return 0;
+    }
+
+    char resolved[PATH_MAX];
+    int path_result = find_in_path(argv[0], resolved, sizeof(resolved));
+    if (path_result == 0) {
+        return execute_external(resolved, argv);
+    }
+    if (path_result == GOSH_ERR_ACCES || path_result == GOSH_ERR_PERM) {
+        write_str("gosh: "); write_str(argv[0]); write_str(": permission denied\n");
+        return 126;
+    }
+
+    int r = run_builtin(argv[0], argc, argv);
+    if (r >= 0) {
+        return r;
+    }
+
+    write_str("gosh: "); write_str(argv[0]); write_str(": command not found\n");
+    return 127;
 }
 
 static void execute_line(char *line) {
@@ -439,17 +837,51 @@ static void execute_line(char *line) {
     int argc = parse_line(line, argv);
     if (argc <= 0) return;
 
-    char resolved[PATH_MAX];
-    if (find_in_path(argv[0], resolved, sizeof(resolved)) == 0) {
-        g_last_exit = execute_external(resolved, argv);
-        return;
+    g_last_exit = execute_command_argv(argc, argv);
+}
+
+static int shell_login(void) {
+    char username[32];
+    char password[64];
+
+    g_logged_in = 0;
+    g_session_user[0] = '\0';
+    g_session_home[0] = '\0';
+    g_session_shell[0] = '\0';
+
+    for (;;) {
+        write_str("\e[H\e[J");
+        write_str("OpenHobbyOS Display Manager\n");
+        write_str("Available accounts: root, user\n\n");
+
+        if (read_prompt_line("Username: ", username, sizeof(username), 1) < 0) {
+            return -1;
+        }
+        if (username[0] == '\0') {
+            continue;
+        }
+        if (read_prompt_line("Password: ", password, sizeof(password), 0) < 0) {
+            return -1;
+        }
+
+        if (sys_auth(username, password) == 0) {
+            shell_set_session(username);
+            g_last_exit = 0;
+            g_hist_count = 0;
+            g_hist_pos = 0;
+            g_request_relogin = 0;
+            if (g_session_home[0] && sys_chdir(g_session_home) < 0) {
+                sys_chdir("/");
+            }
+            write_str("\e[H\e[J");
+            write_str("Login successful for ");
+            write_str(g_session_user);
+            write_str("\n");
+            return 0;
+        }
+
+        write_str("Login incorrect\n");
     }
-
-    int r = run_builtin(argv[0], argc, argv);
-    if (r >= 0) { g_last_exit = r; return; }
-
-    write_str("gosh: "); write_str(argv[0]); write_str(": command not found\n");
-    g_last_exit = 127;
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -460,7 +892,16 @@ int main(int argc, char **argv, char **envp) {
     g_hist_pos = 0;
 
     load_theme();
-    write_str("GOSH! v2.0 - OpenHobbyOS Shell\n\n");
+    u_strcpy(g_session_user, "root");
+    u_strcpy(g_session_home, "/root");
+    u_strcpy(g_session_shell, "/bin/gosh");
+    g_logged_in = 0;
+
+    write_str("GOSH! v2.0 - OpenHobbyOS Shell\n");
+
+    if (shell_login() < 0) {
+        return 1;
+    }
 
     char line[LINE_MAX];
 
@@ -470,6 +911,11 @@ int main(int argc, char **argv, char **envp) {
         if (len < 0) break;
         execute_line(line);
         if (g_last_exit < 0) break;
+        if (g_request_relogin) {
+            if (shell_login() < 0) {
+                break;
+            }
+        }
     }
 
     return (g_last_exit == -1) ? 0 : g_last_exit;

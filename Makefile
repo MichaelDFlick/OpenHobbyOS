@@ -9,10 +9,12 @@ PORTS_SYSROOT := $(PORTS_DIR)/sysroot
 NEWLIB_PORT_FILES := $(shell find ports/newlib/openhobbyos -type f | sort)
 ZLIB_PC := $(PORTS_SYSROOT)/lib/pkgconfig/zlib.pc
 LIBSHA1_PC := $(PORTS_SYSROOT)/lib/pkgconfig/libsha1.pc
+LODEPNG_PC := $(PORTS_SYSROOT)/lib/pkgconfig/lodepng.pc
 PIXMAN_PC := $(PORTS_SYSROOT)/lib/pkgconfig/pixman-1.pc
 FASTFETCH_BIN := $(PORTS_DIR)/fastfetch/install/usr/bin/fastfetch
 XNX_COMPOSITOR := $(PORTS_DIR)/xnx/install/bin/xnx-compositor
-PORTS_LUA_BIN := $(PORTS_SYSROOT)/bin/lua
+FFMPEG_STAMP := $(PORTS_DIR)/ffmpeg/.built
+OHPLAY_BIN := $(PORTS_DIR)/ohplay/install/bin/ohplay
 PORTS_TINYGL_A := $(PORTS_SYSROOT)/lib/libtinygl.a
 PORTS_GEARS_BIN := $(PORTS_SYSROOT)/bin/gears
 QEMU := qemu-system-i386
@@ -68,7 +70,9 @@ KERNEL_C_SOURCES := \
 	src/uacpi_port.c \
 	src/netdev.c \
 	src/pci.c \
-	src/rtl8139.c
+	src/rtl8139.c \
+	src/virtio_net.c \
+	src/thread.c
 
 KERNEL_ASM_SOURCES := \
 	src/boot.asm \
@@ -134,7 +138,7 @@ endef
 $(foreach prog,$(USER_PROGRAMS),$(eval $(call user_program_template,$(prog))))
 USER_BINS := $(addprefix $(BUILD_DIR)/user/,$(addsuffix .elf,$(USER_PROGRAMS)))
 
-.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-xnx ports-lodepng ports-lwip ports-doom ports-lua
+.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-xnx ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay
 
 all: $(ISO)
 
@@ -238,13 +242,25 @@ $(PIXMAN_PC): ports/pixman/build-pixman.sh ports/meson/openhobbyos.cross.in tool
 $(FASTFETCH_BIN): ports/fastfetch/build-fastfetch.sh ports/fastfetch/openhobbyos-toolchain.cmake $(PORTS_SYSROOT)/.newlib.stamp
 	ports/fastfetch/build-fastfetch.sh $(PORTS_DIR)/fastfetch $(PORTS_SYSROOT)
 
-$(XNX_COMPOSITOR): ports/xnx/build-xnx.sh $(PIXMAN_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
+$(LODEPNG_PC): ports/lodepng/build-lodepng.sh $(PORTS_SYSROOT)/.newlib.stamp
+	ports/lodepng/build-lodepng.sh $(PORTS_DIR)/lodepng $(PORTS_SYSROOT)
+
+$(XNX_COMPOSITOR): ports/xnx/build-xnx.sh $(PIXMAN_PC) $(LODEPNG_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
 	ports/xnx/build-xnx.sh $(PORTS_DIR)/xnx $(PORTS_SYSROOT)
 
-$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(PORTS_LUA_BIN) $(PORTS_GEARS_BIN) | $(BUILD_DIR)
+$(OHPLAY_BIN): ports/ohplay/build-ohplay.sh $(XNX_COMPOSITOR) $(FFMPEG_STAMP) $(ZLIB_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
+	ports/ohplay/build-ohplay.sh $(PORTS_DIR)/ohplay $(PORTS_SYSROOT)
+
+$(PORTS_TINYGL_A): ports/tinygl/build-tinygl.sh $(PORTS_SYSROOT)/.newlib.stamp
+	ports/tinygl/build-tinygl.sh $(PORTS_DIR)/tinygl $(PORTS_SYSROOT)
+
+$(PORTS_GEARS_BIN): ports/gears/build-gears.sh ports/gears/gears.c $(PORTS_TINYGL_A)
+	ports/gears/build-gears.sh $(PORTS_DIR)/gears $(PORTS_SYSROOT)
+
+$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) | $(BUILD_DIR)
 	tools/build_initrd.sh $@
 
-$(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(PORTS_LUA_BIN) $(PORTS_GEARS_BIN) tools/populate_disk.sh tools/rootfs_manifest.sh
+$(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) tools/populate_disk.sh tools/rootfs_manifest.sh
 	sudo env OPENHOBBYOS_ROOT="$(CURDIR)" "$(CURDIR)/tools/populate_disk.sh" "$(CURDIR)/$(DISK_IMG)"
 
 $(ISO): $(KERNEL) $(INITRD) grub/grub.cfg | $(BUILD_DIR)
@@ -266,10 +282,11 @@ ports-libsha1: $(LIBSHA1_PC)
 
 ports-pixman: $(PIXMAN_PC)
 
+ports-lodepng: $(LODEPNG_PC)
+
 ports-xnx: $(XNX_COMPOSITOR)
 
-ports-lodepng: ports/lodepng/build-lodepng.sh $(PORTS_SYSROOT)/.newlib.stamp
-	ports/lodepng/build-lodepng.sh $(PORTS_DIR)/lodepng $(PORTS_SYSROOT)
+ports-ohplay: $(OHPLAY_BIN)
 
 ports-lwip: ports/lwip/build-lwip.sh $(PORTS_SYSROOT)/.newlib.stamp
 	ports/lwip/build-lwip.sh $(PORTS_DIR)/lwip $(PORTS_SYSROOT)
@@ -277,25 +294,17 @@ ports-lwip: ports/lwip/build-lwip.sh $(PORTS_SYSROOT)/.newlib.stamp
 ports-doom: ports/doom/build-doom.sh $(PORTS_SYSROOT)/.newlib.stamp
 	ports/doom/build-doom.sh $(PORTS_DIR)/doom $(PORTS_SYSROOT)
 
-ports-ffmpeg: ports/ffmpeg/build-ffmpeg.sh $(PORTS_SYSROOT)/.newlib.stamp
+$(FFMPEG_STAMP): ports/ffmpeg/build-ffmpeg.sh $(PORTS_SYSROOT)/.newlib.stamp
 	ports/ffmpeg/build-ffmpeg.sh $(PORTS_DIR)/ffmpeg $(PORTS_SYSROOT)
+	touch $@
 
-$(PORTS_LUA_BIN): ports/lua/build-lua.sh $(PORTS_SYSROOT)/.newlib.stamp
-	ports/lua/build-lua.sh $(PORTS_DIR)/lua $(PORTS_SYSROOT)
-
-ports-lua: $(PORTS_LUA_BIN)
-
-$(PORTS_TINYGL_A): ports/tinygl/build-tinygl.sh $(PORTS_SYSROOT)/.newlib.stamp
-	ports/tinygl/build-tinygl.sh $(PORTS_DIR)/tinygl $(PORTS_SYSROOT)
+ports-ffmpeg: $(FFMPEG_STAMP)
 
 ports-tinygl: $(PORTS_TINYGL_A)
 
-$(PORTS_GEARS_BIN): ports/gears/build-gears.sh ports/gears/gears.c $(PORTS_TINYGL_A)
-	ports/gears/build-gears.sh $(PORTS_DIR)/gears $(PORTS_SYSROOT)
-
 ports-gears: $(PORTS_GEARS_BIN)
 
-ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(PORTS_LUA_BIN) $(PORTS_GEARS_BIN)
+ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(LODEPNG_PC)
 
 run: run-gui
 

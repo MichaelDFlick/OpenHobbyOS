@@ -67,6 +67,11 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/xnx/install/bin/xnx-demo::/bin/xnx-demo")
     fi
 
+    if [[ -f "$ROOT/build/ports/ohplay/install/bin/ohplay" ]]; then
+        _out+=("$ROOT/build/ports/ohplay/install/bin/ohplay::/bin/ohplay")
+        _out+=("$ROOT/build/ports/ohplay/install/bin/ohplay::/bin/play")
+    fi
+
     if [[ -f "$ROOT/build/ports/sysroot/bin/doom" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/doom::/bin/doom")
     fi
@@ -79,8 +84,7 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/gears::/bin/gears")
     fi
 
-    if [[ -f "$ROOT/build/ports/sysroot/bin/lua" ]]; then
-        _out+=("$ROOT/build/ports/sysroot/bin/lua::/bin/lua")
-        _out+=("$ROOT/build/ports/sysroot/bin/lua::/usr/bin/lua")
+    if [[ -f "$ROOT/build/ports/sysroot/bin/test_write" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/test_write::/bin/test_write")
     fi
 }

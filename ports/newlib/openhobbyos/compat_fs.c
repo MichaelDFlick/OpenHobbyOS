@@ -274,17 +274,11 @@ int chdir(const char *path) {
 }
 
 int chmod(const char *path, mode_t mode) {
-    struct stat st;
-
-    (void) mode;
     if (path == NULL) {
         errno = EFAULT;
         return -1;
     }
-    if (stat(path, &st) != 0) {
-        return -1;
-    }
-    return 0;
+    return oh_check_result(oh_chmod_raw(path, (unsigned int)mode));
 }
 
 int fchmod(int fd, mode_t mode) {
@@ -294,7 +288,8 @@ int fchmod(int fd, mode_t mode) {
     if (fstat(fd, &st) != 0) {
         return -1;
     }
-    return 0;
+    errno = ENOSYS;
+    return -1;
 }
 
 int fchown(int fd, uid_t owner, gid_t group) {

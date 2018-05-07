@@ -9,31 +9,47 @@
 
 #include "compat.h"
 
-static const char oh_user_name[] = "root";
-static const char oh_user_passwd[] = "x";
-static const char oh_user_gecos[] = "OpenHobbyOS";
-static const char oh_user_home[] = "/root";
-static const char oh_user_shell[] = "/bin/gosh";
-static const char oh_group_name[] = "root";
-
-static struct passwd oh_passwd = {
-    .pw_name = (char *) oh_user_name,
-    .pw_passwd = (char *) oh_user_passwd,
-    .pw_uid = 0,
-    .pw_gid = 0,
-    .pw_comment = (char *) oh_user_gecos,
-    .pw_gecos = (char *) oh_user_gecos,
-    .pw_dir = (char *) oh_user_home,
-    .pw_shell = (char *) oh_user_shell,
+struct oh_user_record {
+    const char *name;
+    const char *passwd;
+    uid_t uid;
+    gid_t gid;
+    const char *gecos;
+    const char *home;
+    const char *shell;
 };
 
-static char *oh_group_members[] = { (char *) oh_user_name, NULL };
-static struct group oh_group = {
-    .gr_name = (char *) oh_group_name,
-    .gr_passwd = (char *) oh_user_passwd,
-    .gr_gid = 0,
-    .gr_mem = oh_group_members,
+static const struct oh_user_record oh_users[] = {
+    { "root", "root", 0, 0, "OpenHobbyOS root", "/root", "/bin/gosh" },
+    { "user", "user", 1000, 1000, "OpenHobbyOS user", "/home/user", "/bin/gosh" },
 };
+
+static const struct oh_user_record *oh_find_user_by_name(const char *name) {
+    for (size_t i = 0; i < sizeof(oh_users) / sizeof(oh_users[0]); ++i) {
+        if (name != NULL && strcmp(oh_users[i].name, name) == 0) {
+            return &oh_users[i];
+        }
+    }
+    return NULL;
+}
+
+static const struct oh_user_record *oh_find_user_by_uid(uid_t uid) {
+    for (size_t i = 0; i < sizeof(oh_users) / sizeof(oh_users[0]); ++i) {
+        if (oh_users[i].uid == uid) {
+            return &oh_users[i];
+        }
+    }
+    return NULL;
+}
+
+static const struct oh_user_record *oh_find_user_by_gid(gid_t gid) {
+    for (size_t i = 0; i < sizeof(oh_users) / sizeof(oh_users[0]); ++i) {
+        if (oh_users[i].gid == gid) {
+            return &oh_users[i];
+        }
+    }
+    return NULL;
+}
 
 static int oh_pack_string(char **slot, char **cursor, size_t *remaining, const char *text) {
     size_t length = strlen(text) + 1;
@@ -49,48 +65,48 @@ static int oh_pack_string(char **slot, char **cursor, size_t *remaining, const c
     return 0;
 }
 
-static int oh_fill_passwd(struct passwd *pwd, char *buffer, size_t size, struct passwd **result) {
+static int oh_fill_passwd_from_record(const struct oh_user_record *record, struct passwd *pwd, char *buffer, size_t size, struct passwd **result) {
     char *cursor = buffer;
     size_t remaining = size;
     int status;
 
-    if (pwd == NULL || buffer == NULL || result == NULL) {
+    if (pwd == NULL || buffer == NULL || result == NULL || record == NULL) {
         return EINVAL;
     }
 
-    status = oh_pack_string(&pwd->pw_name, &cursor, &remaining, oh_user_name);
+    status = oh_pack_string(&pwd->pw_name, &cursor, &remaining, record->name);
     if (status == 0) {
-        status = oh_pack_string(&pwd->pw_passwd, &cursor, &remaining, oh_user_passwd);
+        status = oh_pack_string(&pwd->pw_passwd, &cursor, &remaining, record->passwd);
     }
     if (status == 0) {
-        status = oh_pack_string(&pwd->pw_comment, &cursor, &remaining, oh_user_gecos);
+        status = oh_pack_string(&pwd->pw_comment, &cursor, &remaining, record->gecos);
     }
     if (status == 0) {
-        status = oh_pack_string(&pwd->pw_gecos, &cursor, &remaining, oh_user_gecos);
+        status = oh_pack_string(&pwd->pw_gecos, &cursor, &remaining, record->gecos);
     }
     if (status == 0) {
-        status = oh_pack_string(&pwd->pw_dir, &cursor, &remaining, oh_user_home);
+        status = oh_pack_string(&pwd->pw_dir, &cursor, &remaining, record->home);
     }
     if (status == 0) {
-        status = oh_pack_string(&pwd->pw_shell, &cursor, &remaining, oh_user_shell);
+        status = oh_pack_string(&pwd->pw_shell, &cursor, &remaining, record->shell);
     }
     if (status != 0) {
         *result = NULL;
         return status;
     }
 
-    pwd->pw_uid = 0;
-    pwd->pw_gid = 0;
+    pwd->pw_uid = record->uid;
+    pwd->pw_gid = record->gid;
     *result = pwd;
     return 0;
 }
 
-static int oh_fill_group(struct group *grp, char *buffer, size_t size, struct group **result) {
+static int oh_fill_group_from_record(const struct oh_user_record *record, struct group *grp, char *buffer, size_t size, struct group **result) {
     char *cursor = buffer;
     size_t remaining = size;
     int status;
 
-    if (grp == NULL || buffer == NULL || result == NULL) {
+    if (grp == NULL || buffer == NULL || result == NULL || record == NULL) {
         return EINVAL;
     }
 
@@ -103,12 +119,12 @@ static int oh_fill_group(struct group *grp, char *buffer, size_t size, struct gr
     cursor += sizeof(char *) * 2u;
     remaining -= sizeof(char *) * 2u;
 
-    status = oh_pack_string(&grp->gr_name, &cursor, &remaining, oh_group_name);
+    status = oh_pack_string(&grp->gr_name, &cursor, &remaining, record->name);
     if (status == 0) {
-        status = oh_pack_string(&grp->gr_passwd, &cursor, &remaining, oh_user_passwd);
+        status = oh_pack_string(&grp->gr_passwd, &cursor, &remaining, record->passwd);
     }
     if (status == 0) {
-        status = oh_pack_string(&grp->gr_mem[0], &cursor, &remaining, oh_user_name);
+        status = oh_pack_string(&grp->gr_mem[0], &cursor, &remaining, record->name);
     }
     if (status != 0) {
         *result = NULL;
@@ -116,7 +132,7 @@ static int oh_fill_group(struct group *grp, char *buffer, size_t size, struct gr
     }
 
     grp->gr_mem[1] = NULL;
-    grp->gr_gid = 0;
+    grp->gr_gid = record->gid;
     *result = grp;
     return 0;
 }
@@ -191,23 +207,19 @@ gid_t getegid(void) {
 }
 
 int setuid(uid_t uid) {
-    if (uid == 0) {
-        return 0;
-    }
-    errno = EPERM;
-    return -1;
+    return oh_check_result(oh_setuid_raw((unsigned int)uid));
 }
 
 int seteuid(uid_t uid) {
-    return setuid(uid);
+    return oh_check_result(oh_seteuid_raw((unsigned int)uid));
 }
 
 int setgid(gid_t gid) {
-    if (gid == 0) {
-        return 0;
-    }
-    errno = EPERM;
-    return -1;
+    return oh_check_result(oh_setgid_raw((unsigned int)gid));
+}
+
+int setegid(gid_t gid) {
+    return oh_check_result(oh_setegid_raw((unsigned int)gid));
 }
 
 pid_t getpgrp(void) {
@@ -230,90 +242,132 @@ int setpgid(pid_t pid, pid_t pgid) {
 }
 
 char *getlogin(void) {
-    return (char *) oh_user_name;
+    const struct oh_user_record *record = oh_find_user_by_uid((uid_t)oh_getuid_raw());
+    const struct oh_user_record *fallback = oh_find_user_by_uid(0);
+    return (char *)(record ? record->name : (fallback ? fallback->name : "root"));
 }
 
 int getlogin_r(char *name, size_t namesize) {
-    size_t needed = strlen(oh_user_name) + 1;
+    const struct oh_user_record *record = oh_find_user_by_uid((uid_t)oh_getuid_raw());
+    const char *user_name = record ? record->name : "root";
+    size_t needed = strlen(user_name) + 1;
 
     if (name == NULL || namesize < needed) {
         return ERANGE;
     }
 
-    memcpy(name, oh_user_name, needed);
+    memcpy(name, user_name, needed);
     return 0;
 }
 
 struct passwd *getpwuid(uid_t uid) {
-    if (uid != 0) {
+    const struct oh_user_record *record = oh_find_user_by_uid(uid);
+    struct passwd *result = NULL;
+
+    if (record == NULL) {
         errno = ENOENT;
+        return NULL;
+    }
+    static struct passwd oh_passwd;
+    static char buffer[256];
+    if (oh_fill_passwd_from_record(record, &oh_passwd, buffer, sizeof(buffer), &result) != 0 || result == NULL) {
+        errno = ERANGE;
         return NULL;
     }
     return &oh_passwd;
 }
 
 struct passwd *getpwnam(const char *name) {
-    if (name == NULL || strcmp(name, oh_user_name) != 0) {
+    const struct oh_user_record *record = oh_find_user_by_name(name);
+
+    if (record == NULL) {
         errno = ENOENT;
+        return NULL;
+    }
+    static struct passwd oh_passwd;
+    static char buffer[256];
+    struct passwd *result = NULL;
+    if (oh_fill_passwd_from_record(record, &oh_passwd, buffer, sizeof(buffer), &result) != 0 || result == NULL) {
+        errno = ERANGE;
         return NULL;
     }
     return &oh_passwd;
 }
 
 int getpwuid_r(uid_t uid, struct passwd *pwd, char *buffer, size_t size, struct passwd **result) {
-    if (uid != 0) {
+    const struct oh_user_record *record = oh_find_user_by_uid(uid);
+    if (record == NULL) {
         if (result) {
             *result = NULL;
         }
         return ENOENT;
     }
-    return oh_fill_passwd(pwd, buffer, size, result);
+    return oh_fill_passwd_from_record(record, pwd, buffer, size, result);
 }
 
 int getpwnam_r(const char *name, struct passwd *pwd, char *buffer, size_t size, struct passwd **result) {
-    if (name == NULL || strcmp(name, oh_user_name) != 0) {
+    const struct oh_user_record *record = oh_find_user_by_name(name);
+    if (record == NULL) {
         if (result) {
             *result = NULL;
         }
         return ENOENT;
     }
-    return oh_fill_passwd(pwd, buffer, size, result);
+    return oh_fill_passwd_from_record(record, pwd, buffer, size, result);
 }
 
 struct group *getgrgid(gid_t gid) {
-    if (gid != 0) {
+    const struct oh_user_record *record = oh_find_user_by_gid(gid);
+    if (record == NULL) {
         errno = ENOENT;
+        return NULL;
+    }
+    static struct group oh_group;
+    static char buffer[128];
+    struct group *result = NULL;
+    if (oh_fill_group_from_record(record, &oh_group, buffer, sizeof(buffer), &result) != 0 || result == NULL) {
+        errno = ERANGE;
         return NULL;
     }
     return &oh_group;
 }
 
 struct group *getgrnam(const char *name) {
-    if (name == NULL || strcmp(name, oh_group_name) != 0) {
+    const struct oh_user_record *record = oh_find_user_by_name(name);
+    if (record == NULL) {
         errno = ENOENT;
+        return NULL;
+    }
+    static struct group oh_group;
+    static char buffer[128];
+    struct group *result = NULL;
+    if (oh_fill_group_from_record(record, &oh_group, buffer, sizeof(buffer), &result) != 0 || result == NULL) {
+        errno = ERANGE;
         return NULL;
     }
     return &oh_group;
 }
 
 int getgrgid_r(gid_t gid, struct group *grp, char *buffer, size_t size, struct group **result) {
-    if (gid != 0) {
+    const struct oh_user_record *record = oh_find_user_by_gid(gid);
+    if (record == NULL) {
         if (result) {
             *result = NULL;
         }
         return ENOENT;
     }
-    return oh_fill_group(grp, buffer, size, result);
+    return oh_fill_group_from_record(record, grp, buffer, size, result);
 }
 
 int getgrnam_r(const char *name, struct group *grp, char *buffer, size_t size, struct group **result) {
-    if (name == NULL || strcmp(name, oh_group_name) != 0) {
+    const struct oh_user_record *record = oh_find_user_by_name(name);
+    if (record == NULL) {
         if (result) {
             *result = NULL;
         }
         return ENOENT;
     }
-    return oh_fill_group(grp, buffer, size, result);
+    return oh_fill_group_from_record(record, grp, buffer, size, result);
 }
 
 long sysconf(int name) {

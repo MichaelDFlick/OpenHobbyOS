@@ -2,6 +2,7 @@
 #define OHOS_USER_SYSCALL_H
 
 #include "abi/linux.h"
+#include "thread.h"
 
 int sys_exit(int status);
 int sys_exit_group(int status);
@@ -42,6 +43,18 @@ int sys_spawn(const char *path, const char *const argv[]);
 int sys_waitpid(int pid, int *status, int options);
 int sys_sched_yield(void);
 int sys_mkdir(const char *path, int mode);
+int sys_chmod(const char *path, int mode);
+int sys_auth(const char *username, const char *password);
+int sys_setuid(unsigned int uid);
+int sys_setgid(unsigned int gid);
+int sys_seteuid(unsigned int uid);
+int sys_setegid(unsigned int gid);
+int sys_thread_create(unsigned int *tid_out, const thread_attr_t *attr, unsigned int (*start_func)(void *), void *arg);
+int sys_thread_exit(int exit_code);
+int sys_thread_join(unsigned int tid, int *status);
+int sys_thread_detach(unsigned int tid);
+int sys_thread_yield(void);
+unsigned int sys_thread_self(void);
 int sys_reboot(void);
 int sys_shutdown(void);
 int sys_suspend(void);

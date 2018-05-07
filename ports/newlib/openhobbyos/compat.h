@@ -9,6 +9,15 @@
 #include <sys/time.h>
 #include <sys/types.h>
 
+/* Avoid pulling in kernel thread headers here; newlib already provides
+ * signal-related types that conflict with the kernel-side definitions. We
+ * only need the attribute shape for the raw thread syscall helpers. */
+typedef struct {
+    unsigned int stack_size;
+    unsigned int guard_size;
+    unsigned int priority;
+} thread_attr_t;
+
 #ifdef st_atime
 #undef st_atime
 #endif
@@ -208,6 +217,54 @@ static inline int oh_waitpid_raw(int pid, int *status, int options) {
 
 static inline int oh_sched_yield_raw(void) {
     return oh_syscall0(OHOS_SYS_YIELD);
+}
+
+static inline int oh_setuid_raw(unsigned int uid) {
+    return oh_syscall1(OHOS_SYS_SETUID, (int) uid);
+}
+
+static inline int oh_setgid_raw(unsigned int gid) {
+    return oh_syscall1(OHOS_SYS_SETGID, (int) gid);
+}
+
+static inline int oh_seteuid_raw(unsigned int uid) {
+    return oh_syscall1(OHOS_SYS_SETEUID, (int) uid);
+}
+
+static inline int oh_setegid_raw(unsigned int gid) {
+    return oh_syscall1(OHOS_SYS_SETEGID, (int) gid);
+}
+
+static inline int oh_auth_raw(const char *username, const char *password) {
+    return oh_syscall2(OHOS_SYS_AUTH, (int) username, (int) password);
+}
+
+static inline int oh_chmod_raw(const char *path, unsigned int mode) {
+    return oh_syscall2(OHOS_SYS_CHMOD, (int) path, (int) mode);
+}
+
+static inline int oh_thread_create_raw(unsigned int *tid_out, const thread_attr_t *attr, unsigned int (*start_func)(void *), void *arg) {
+    return oh_syscall4(OHOS_SYS_THREAD_CREATE, (int) tid_out, (int) attr, (int) start_func, (int) arg);
+}
+
+static inline int oh_thread_exit_raw(int exit_code) {
+    return oh_syscall1(OHOS_SYS_THREAD_EXIT, exit_code);
+}
+
+static inline int oh_thread_join_raw(unsigned int tid, int *status) {
+    return oh_syscall2(OHOS_SYS_THREAD_JOIN, (int) tid, (int) status);
+}
+
+static inline int oh_thread_detach_raw(unsigned int tid) {
+    return oh_syscall1(OHOS_SYS_THREAD_DETACH, (int) tid);
+}
+
+static inline int oh_thread_yield_raw(void) {
+    return oh_syscall0(OHOS_SYS_THREAD_YIELD);
+}
+
+static inline unsigned int oh_thread_self_raw(void) {
+    return (unsigned int) oh_syscall0(OHOS_SYS_THREAD_SELF);
 }
 
 static inline int oh_dup_raw(int fd) {

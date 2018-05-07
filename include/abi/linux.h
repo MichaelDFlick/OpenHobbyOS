@@ -94,6 +94,18 @@
 #define OHOS_SYS_MEMSTAT        410
 #define OHOS_SYS_TICKS          411
 #define OHOS_SYS_TICKFREQ       412
+#define OHOS_SYS_THREAD_CREATE  413
+#define OHOS_SYS_THREAD_EXIT    414
+#define OHOS_SYS_THREAD_JOIN    415
+#define OHOS_SYS_THREAD_DETACH  416
+#define OHOS_SYS_THREAD_YIELD   417
+#define OHOS_SYS_THREAD_SELF    418
+#define OHOS_SYS_SETUID         419
+#define OHOS_SYS_SETGID         420
+#define OHOS_SYS_SETEUID        421
+#define OHOS_SYS_SETEGID        422
+#define OHOS_SYS_AUTH           423
+#define OHOS_SYS_CHMOD          424
 
 #define LINUX_AT_FDCWD (-100)
 
