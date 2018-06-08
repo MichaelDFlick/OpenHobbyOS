@@ -8,7 +8,7 @@
 
 #define SOCKET_MAX_OBJECTS 64
 #define SOCKET_BACKLOG 8
-#define SOCKET_BUFFER_SIZE 65536
+#define SOCKET_BUFFER_SIZE 8192
 #define SOCKET_CONTROL_MAX 64
 
 typedef enum {

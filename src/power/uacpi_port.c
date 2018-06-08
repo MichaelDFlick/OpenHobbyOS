@@ -13,8 +13,6 @@
 #include "string.h"
 #include "panic.h"
 
-#define KERNEL_VIRTUAL_BASE 0xC0000000u
-
 static bool uacpi_port_initialized;
 static uacpi_phys_addr uacpi_rsdp_address;
 
@@ -27,6 +25,7 @@ struct uacpi_mapping {
 static struct uacpi_mapping uacpi_mappings[16];
 
 static void *map_via_kernel(uacpi_phys_addr phys, uacpi_size len) {
+    (void)len;
     u32 phys32 = (u32)phys;
     u32 offset = phys32 & (PAGE_SIZE - 1);
     u32 phys_page = phys32 & PAGE_MASK;
@@ -41,15 +40,20 @@ static void *allocate_mapping(uacpi_phys_addr phys, uacpi_size len) {
             u32 offset = (u32)(phys - phys_page);
             u32 map_size = (u32)((len + offset + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
 
-            u32 window_base = KERNEL_VIRTUAL_BASE + 0x80000000u;
-            u32 window_top = 0xFFC00000u;
+            /* Use a dedicated window in kernel space for dynamic mappings. 
+             * 0xFE000000 - 0xFEFFFFFF (16MB) is safe as long as the 1:1 
+             * physical mapping doesn't extend this far. */
+            u32 window_base = 0xFE000000u;
+            u32 window_top = 0xFF000000u;
 
             u32 pages_needed = map_size / PAGE_SIZE;
             if (pages_needed == 0) pages_needed = 1;
             u32 window_size = pages_needed * PAGE_SIZE;
 
-            u32 va = window_top - window_size;
-            if (va < window_base) return NULL;
+            /* Simple bump allocator within the window for now, 
+             * using the index to differentiate. */
+            u32 va = window_base + (u32)i * 0x100000u; /* 1MB per slot */
+            if (va + window_size > window_top) return NULL;
 
             page_directory_t *pd = page_directory_get_kernel();
             for (u32 page = 0; page < window_size; page += PAGE_SIZE) {
@@ -74,13 +78,27 @@ static void *allocate_mapping(uacpi_phys_addr phys, uacpi_size len) {
     return NULL;
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+/*
+ * Find the RSDP (Root System Description Pointer). 
+ * This is the holy grail of ACPI. Without this, we can't find the tables, 
+ * and without the tables, we can't even turn off the machine properly.
+ * We scan the BDA and the BIOS read-only memory range.
+ */
 uacpi_status uacpi_kernel_get_rsdp(uacpi_phys_addr *out_rsdp_address) {
     if (uacpi_rsdp_address != 0) {
         *out_rsdp_address = uacpi_rsdp_address;
         return UACPI_STATUS_OK;
     }
 
-    u16 ebda_segment = *(volatile u16 *)(uintptr_t)0x40E;
+    /* 
+     * Use higher-half mapping to access BDA and BIOS memory. 
+     * Real hardware often puts critical info in the first 1MB. 
+     * If we try to access physical 0x40E directly, we'll page fault. 
+     * Instead, we use our 3GB+ window into the physical world.
+     */
+    u16 ebda_segment = *(volatile u16 *)(uintptr_t)(KERNEL_VIRTUAL_BASE + 0x40E);
     u32 ebda_base = (u32)ebda_segment << 4;
 
     u32 ranges[][2] = {
@@ -89,6 +107,7 @@ uacpi_status uacpi_kernel_get_rsdp(uacpi_phys_addr *out_rsdp_address) {
     };
     int num_ranges = 2;
 
+    /* Sanity check the EBDA address. BIOSes are notoriously unreliable. */
     if (ebda_base < 0x80000u || ebda_base >= 0xA0000u) {
         ranges[0][1] = 0;
         num_ranges = 1;
@@ -99,13 +118,17 @@ uacpi_status uacpi_kernel_get_rsdp(uacpi_phys_addr *out_rsdp_address) {
         u32 end = ranges[r][1];
         if (start >= end) continue;
 
+        /* Scan for the "RSD PTR " signature. */
         for (u32 addr = start; addr + 20 <= end; addr += 16) {
-            const char *sig = (const char *)(uintptr_t)addr;
+            const char *sig = (const char *)(uintptr_t)(KERNEL_VIRTUAL_BASE + addr);
             if (sig[0] == 'R' && sig[1] == 'S' && sig[2] == 'D' &&
                 sig[3] == ' ' && sig[4] == 'P' && sig[5] == 'T' &&
                 sig[6] == 'R' && sig[7] == ' ') {
+                
+                /* Found a signature. Verify the checksum before we get too excited. */
                 u8 sum = 0;
-                for (int i = 0; i < 20; i++) sum = (u8)(sum + ((const u8 *)(uintptr_t)addr)[i]);
+                const u8 *ptr = (const u8 *)(uintptr_t)(KERNEL_VIRTUAL_BASE + addr);
+                for (int i = 0; i < 20; i++) sum = (u8)(sum + ptr[i]);
                 if (sum == 0) {
                     uacpi_rsdp_address = addr;
                     *out_rsdp_address = addr;
@@ -116,10 +139,12 @@ uacpi_status uacpi_kernel_get_rsdp(uacpi_phys_addr *out_rsdp_address) {
     }
     return UACPI_STATUS_NOT_FOUND;
 }
+#pragma GCC diagnostic pop
 
 void *uacpi_kernel_map(uacpi_phys_addr addr, uacpi_size len) {
     u32 phys_max = (u32)addr + (u32)len;
-    if (phys_max <= 0x40000000u) {
+    /* 896MB is the limit for higher-half 1:1 mapping (Lowmem) */
+    if (phys_max <= 0x38000000u) {
         return map_via_kernel(addr, len);
     }
     return allocate_mapping(addr, len);
@@ -174,6 +199,7 @@ void uacpi_kernel_pci_device_close(uacpi_handle handle) {
 }
 
 static u32 pci_read_raw(uacpi_handle device, uacpi_size offset, uacpi_size width) {
+    (void)width;
     uacpi_pci_address *addr = (uacpi_pci_address *)device;
     return pci_config_read(addr->bus, addr->device, addr->function, (u8)offset);
 }
@@ -222,6 +248,92 @@ struct uacpi_io_range {
     uacpi_size len;
 };
 
+typedef struct uacpi_heap_chunk {
+    struct uacpi_heap_chunk *next;
+    u32 capacity;
+    u32 used;
+} uacpi_heap_chunk_t;
+
+static uacpi_heap_chunk_t *uacpi_heap_head;
+static uacpi_heap_chunk_t *uacpi_heap_tail;
+
+static u32 uacpi_align_up(u32 value, u32 alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+static bool uacpi_heap_add_chunk(u32 minimum_bytes) {
+    const u32 default_bytes = 64u * 1024u;
+    u32 payload_bytes = minimum_bytes;
+    u32 total_bytes;
+    u32 pages;
+    u32 base_phys = 0;
+    u32 previous_phys = 0;
+
+    if (payload_bytes < default_bytes) {
+        payload_bytes = default_bytes;
+    }
+
+    total_bytes = payload_bytes + sizeof(uacpi_heap_chunk_t);
+    total_bytes = uacpi_align_up(total_bytes, PAGE_SIZE);
+    pages = total_bytes / PAGE_SIZE;
+
+    for (u32 page = 0; page < pages; ++page) {
+        u32 phys = frame_alloc();
+        if (phys == 0) {
+            return false;
+        }
+        /* We need contiguous physical memory for simplicity here,
+         * or we'd need to map them to a contiguous virtual range.
+         * Since frame_alloc usually returns contiguous frames from 
+         * the bitmap, this often works. */
+        if (page == 0) {
+            base_phys = phys;
+        } else if (phys != previous_phys + PAGE_SIZE) {
+            /* If not contiguous, we'd need a more complex allocator.
+             * For now, just panic or return false. */
+            return false;
+        }
+        previous_phys = phys;
+    }
+
+    /* Use higher-half mapping for the heap chunk pointer. */
+    uacpi_heap_chunk_t *chunk = (uacpi_heap_chunk_t *)(uintptr_t)(KERNEL_VIRTUAL_BASE + base_phys);
+    chunk->next = NULL;
+    chunk->capacity = total_bytes - sizeof(uacpi_heap_chunk_t);
+    chunk->used = 0;
+
+    if (!uacpi_heap_head) {
+        uacpi_heap_head = chunk;
+    } else {
+        uacpi_heap_tail->next = chunk;
+    }
+    uacpi_heap_tail = chunk;
+    return true;
+}
+
+static void *uacpi_heap_alloc(uacpi_size size, bool zeroed) {
+    u32 needed = uacpi_align_up((u32)size, 8u);
+    uacpi_heap_chunk_t *chunk = uacpi_heap_tail;
+
+    if (needed == 0) {
+        needed = 8;
+    }
+
+    if (!chunk || chunk->used + needed > chunk->capacity) {
+        if (!uacpi_heap_add_chunk(needed)) {
+            return NULL;
+        }
+        chunk = uacpi_heap_tail;
+    }
+
+    void *ptr = (void *)((u8 *)(chunk + 1) + chunk->used);
+    chunk->used += needed;
+    if (zeroed) {
+        memset(ptr, 0, needed);
+    }
+    return ptr;
+}
+
 uacpi_status uacpi_kernel_io_map(uacpi_io_addr base, uacpi_size len, uacpi_handle *out_handle) {
     struct uacpi_io_range *range = uacpi_kernel_alloc(sizeof(struct uacpi_io_range));
     if (!range) return UACPI_STATUS_OUT_OF_MEMORY;
@@ -267,11 +379,15 @@ uacpi_status uacpi_kernel_io_write32(uacpi_handle handle, uacpi_size offset, uac
 }
 
 void *uacpi_kernel_alloc(uacpi_size size) {
-    return kmalloc((size_t)size);
+    return uacpi_heap_alloc(size, false);
+}
+
+void *uacpi_kernel_alloc_zeroed(uacpi_size size) {
+    return uacpi_heap_alloc(size, true);
 }
 
 void uacpi_kernel_free(void *mem) {
-    kfree(mem);
+    (void)mem;
 }
 
 uacpi_u64 uacpi_kernel_get_nanoseconds_since_boot(void) {
@@ -423,6 +539,7 @@ uacpi_status uacpi_kernel_install_interrupt_handler(uacpi_u32 irq, uacpi_interru
 }
 
 uacpi_status uacpi_kernel_uninstall_interrupt_handler(uacpi_interrupt_handler handler, uacpi_handle irq_handle) {
+    (void)handler;
     int idx = (int)(uintptr_t)irq_handle - 1;
     if (idx >= 0 && idx < 4 && uacpi_irqs[idx].used) {
         uacpi_irqs[idx].used = false;

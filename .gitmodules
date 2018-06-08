@@ -37,3 +37,19 @@
 [submodule "user/lib/tinygl"]
 	path = user/lib/tinygl
 	url = https://github.com/MichealFlick/tinygl
+
+[submodule "user/lib/graphics32/qtbase"]
+	path = user/lib/graphics32/qtbase
+	url = https://github.com/qt/qtbase.git
+[submodule "user/lib/graphics32/qtdeclarative"]
+	path = user/lib/graphics32/qtdeclarative
+	url = https://github.com/qt/qtdeclarative.git
+[submodule "user/lib/freetype"]
+	path = user/lib/freetype
+	url = https://github.com/freetype/freetype.git
+[submodule "user/lib/graphics32/qtshadertools"]
+	path = user/lib/graphics32/qtshadertools
+	url = https://github.com/qt/qtshadertools.git
+[submodule "user/lib/cairo"]
+	path = user/lib/cairo
+	url = https://gitlab.freedesktop.org/cairo/cairo.git

@@ -41,6 +41,7 @@ typedef struct {
 } console_fb_info_t;
 
 void console_init(void);
+void console_load_ttf(void);
 void console_configure(const multiboot_info_t *mbi);
 void console_activate(void);
 void console_clear(void);

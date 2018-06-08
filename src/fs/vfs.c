@@ -53,6 +53,7 @@ enum {
     VFS_VIRTUAL_DEV_FB0,
     VFS_VIRTUAL_DEV_NET,
     VFS_VIRTUAL_DEV_KEYBOARD,
+    VFS_VIRTUAL_DEV_MOUSE,
 };
 
 struct ext2_fs *vfs_ext2_fs(void) {
@@ -287,6 +288,7 @@ static bool create_virtual_nodes(void) {
         {"/dev/fb0", VFS_VIRTUAL_DEV_FB0},
         {"/dev/net", VFS_VIRTUAL_DEV_NET},
         {"/dev/keyboard", VFS_VIRTUAL_DEV_KEYBOARD},
+        {"/dev/mouse", VFS_VIRTUAL_DEV_MOUSE},
     };
 
     for (size_t i = 0; i < sizeof(virtual_files) / sizeof(virtual_files[0]); ++i) {
@@ -561,16 +563,24 @@ const vfs_node_t *vfs_root(void) {
     return root_node;
 }
 
+/* 
+ * vfs_resolve: The recursive descent into path-parsing madness.
+ * We take a string and attempt to find a node in our tree. 
+ * This is where we handle mount points, '..' traversals, 
+ * and the general messy reality of userspace paths.
+ */
 const vfs_node_t *vfs_resolve(const vfs_node_t *cwd, const char *path) {
     if (!path || !mounted) {
         return NULL;
     }
 
+    /* Start at '/' for absolute paths, or 'cwd' for relative ones. */
     struct vfs_node *base = (path[0] == '/') ? root_node : (struct vfs_node *)cwd;
     if (!base) {
         base = root_node;
     }
 
+    /* Quick exit for the root directory. */
     if (path[0] == '/' && path[1] == '\0') {
         return root_node;
     }
@@ -578,17 +588,25 @@ const vfs_node_t *vfs_resolve(const vfs_node_t *cwd, const char *path) {
     const char *cursor = path;
     char segment[VFS_NAME_MAX];
 
+    /* 
+     * Walk the path segment by segment. 
+     * We don't support symbolic links yet, so this is a straightforward 
+     * linear traversal. If we hit a segment that doesn't exist, we bail.
+     */
     while (path_segment(&cursor, segment, sizeof(segment))) {
         if (strcmp(segment, ".") == 0) {
+            /* Dot means 'here'. Do nothing. */
             continue;
         } else if (strcmp(segment, "..") == 0) {
+            /* Dot-dot means 'up'. If we're at root, we just stay at root. */
             if (base->parent) {
                 base = base->parent;
             }
         } else {
+            /* Search children. Linear search is fine for a hobby OS. */
             struct vfs_node *child = find_child(base, segment);
             if (!child) {
-                return NULL;
+                return NULL; /* Path component not found. */
             }
             base = child;
         }
@@ -789,7 +807,7 @@ bool vfs_stat_node(const vfs_node_t *node, vfs_stat_t *stat) {
 
     if (node->is_dir) {
         stat->mode = LINUX_S_IFDIR | (node->mode & 07777u);
-    } else if (node->virtual_id == VFS_VIRTUAL_DEV_NULL || node->virtual_id == VFS_VIRTUAL_DEV_TTY || node->virtual_id == VFS_VIRTUAL_DEV_FB0 || node->virtual_id == VFS_VIRTUAL_DEV_KEYBOARD) {
+    } else if (node->virtual_id == VFS_VIRTUAL_DEV_NULL || node->virtual_id == VFS_VIRTUAL_DEV_TTY || node->virtual_id == VFS_VIRTUAL_DEV_FB0 || node->virtual_id == VFS_VIRTUAL_DEV_KEYBOARD || node->virtual_id == VFS_VIRTUAL_DEV_MOUSE) {
         stat->mode = LINUX_S_IFCHR | (node->mode & 07777u);
         stat->block_size = 1;
     } else if (node->ramfile) {

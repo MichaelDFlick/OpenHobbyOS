@@ -7,6 +7,8 @@ void keyboard_init(void);
 size_t keyboard_readline(char *buffer, size_t size);
 bool keyboard_has_input(void);
 char keyboard_getchar(void);
+bool keyboard_has_input_only(void);
+char keyboard_getchar_only(void);
 bool keyboard_has_raw_scancode(void);
 u8 keyboard_read_raw_scancode(void);
 

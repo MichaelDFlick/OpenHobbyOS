@@ -81,6 +81,7 @@
 #define LINUX_SYS_SHUTDOWN      373
 #define LINUX_SYS_SETSOCKOPT    374
 #define LINUX_SYS_GETSOCKOPT    375
+#define LINUX_SYS_FUTEX         240
 #define OHOS_SYS_SPAWN          400
 #define OHOS_SYS_WAITPID        401
 #define OHOS_SYS_YIELD          402
@@ -187,12 +188,16 @@ struct linux_pollfd {
 #define LINUX_MSG_DONTWAIT 0x40
 
 #define LINUX_AT_NULL   0
+#define LINUX_AT_PHDR   3
+#define LINUX_AT_PHENT  4
+#define LINUX_AT_PHNUM  5
 #define LINUX_AT_PAGESZ 6
+#define LINUX_AT_BASE   7
+#define LINUX_AT_ENTRY  9
 #define LINUX_AT_UID    11
 #define LINUX_AT_EUID   12
 #define LINUX_AT_GID    13
 #define LINUX_AT_EGID   14
-#define LINUX_AT_ENTRY  9
 #define LINUX_AT_EXECFN 31
 
 #ifdef __OHOS_KERNEL__

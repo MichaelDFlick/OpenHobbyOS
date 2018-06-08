@@ -4,6 +4,7 @@
 #include "initrd.h"
 #include "io.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "memory.h"
 #include "multiboot.h"
 #include "netdev.h"
@@ -14,6 +15,7 @@
 #include "pit.h"
 #include "power.h"
 #include "rtl8139.h"
+#include "virtio_net.h"
 #include "task.h"
 #include "thread.h"
 #include "vfs.h"
@@ -28,7 +30,7 @@ static bool kernel_path_is_executable(const char *path) {
     return !st.is_dir && ((st.mode & 0111u) != 0);
 }
 
-static void start_sdp_compositor(void) {
+static void start_xnx_compositor(void) {
     memory_stats_t stats_after;
 
     memory_defragment();
@@ -36,6 +38,18 @@ static void start_sdp_compositor(void) {
     console_printf("[init] heap: %u KiB used, %u KiB free, largest=%u KiB\n",
                    stats_after.heap_used / 1024, stats_after.heap_free / 1024,
                    memory_largest_free_block() / 1024);
+
+    /* If gdm exists, it will open /dev/fb0 directly (no xnx). Skip compositor. */
+    if (kernel_path_is_executable("/bin/gdm")) {
+        console_printf("[init] gdm found, skipping xnx-compositor (gdm owns fb)\n");
+        return;
+    }
+
+    /* If gosh exists, it will open /dev/fb0 directly (no xnx). Skip compositor. */
+    if (kernel_path_is_executable("/bin/gosh")) {
+        console_printf("[init] gosh found, skipping xnx-compositor (gosh owns fb)\n");
+        return;
+    }
 
     console_printf("[init] checking xnx-compositor...\n");
     if (!kernel_path_is_executable("/bin/xnx-compositor")) {
@@ -48,11 +62,6 @@ static void start_sdp_compositor(void) {
         int pid = task_spawn_background("/bin/xnx-compositor");
         console_printf("[init] XNX compositor spawn: pid=%d\n", pid);
     }
-
-    // if (kernel_path_is_executable("/bin/test_fb")) {
-    //     int pid = task_spawn_background("/bin/test_fb");
-    //     console_printf("[init] test_fb spawn: pid=%d\n", pid);
-    // }
 
 }
 
@@ -89,14 +98,19 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     idt_init();
     pit_init(100);
     keyboard_init();
+    mouse_init();
     memory_init(mbi, (uintptr_t)&__kernel_end);
     paging_init(mbi, memory_total_bytes(), (uintptr_t)&__kernel_end);
 
     console_activate();
     boot_banner();
 
+    memory_defragment();
+    power_init();
+
     initrd_init(mbi);
     vfs_init();
+    console_load_ttf();
 
     pci_scan();
     netdev_init();
@@ -107,9 +121,7 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     thread_init();
     workqueue_init();
     fpu_init();
-    start_sdp_compositor();
-
-    power_init();
+    start_xnx_compositor();
 
     interrupts_enable();
 
@@ -136,13 +148,35 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     console_putc('\n');
 
     console_clear();
-    console_printf("[init] spawning GOSH! userspace shell...\n");
+    console_printf("[init] launching shell...\n");
     {
-        const char *shell_argv[] = {"/bin/gosh", NULL};
         memory_defragment();
-        task_run_argv_alongside(NULL, "/bin/gosh", 1, shell_argv);
+        int app_status = -1;
+        if (kernel_path_is_executable("/bin/gdm")) {
+            const char *app_argv[] = {"/bin/gdm", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/gdm", 1, app_argv);
+            console_printf("[init] gdm exited with status %d\n", app_status);
+        } else if (kernel_path_is_executable("/bin/gosh")) {
+            const char *app_argv[] = {"/bin/gosh", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
+            console_printf("[init] gosh exited with status %d\n", app_status);
+        } else if (kernel_path_is_executable("/bin/sh")) {
+            const char *app_argv[] = {"/bin/sh", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/sh", 1, app_argv);
+            console_printf("[init] sh exited with status %d\n", app_status);
+        } else if (kernel_path_is_executable("/bin/terminal")) {
+            const char *app_argv[] = {"/bin/terminal", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/terminal", 1, app_argv);
+            console_printf("[init] terminal exited with status %d\n", app_status);
+        } else if (kernel_path_is_executable("/bin/gosh")) {
+            const char *app_argv[] = {"/bin/gosh", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
+            console_printf("[init] gosh exited with status %d\n", app_status);
+        } else {
+            console_printf("[init] no shell found, halting\n");
+        }
     }
-    console_write("[init] shell exited, halting\n");
+    console_write("[init] app exited, halting\n");
     for (;;) {
         __asm__ volatile ("hlt");
     }

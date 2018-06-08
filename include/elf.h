@@ -2,6 +2,7 @@
 #define OHOS_ELF_H
 
 #include "initrd.h"
+#include "paging.h"
 #include "types.h"
 
 typedef struct {
@@ -10,11 +11,15 @@ typedef struct {
     u32 tls_memsz;
     u32 tls_filesz;
     u32 tls_vaddr;
+    char interp_path[256];
+    u32 phdr_vaddr;
+    u16 phnum;
 } elf_image_t;
 
 struct vfs_node;
 
 bool elf_load_image(const initrd_file_t *file, u32 user_base, u32 user_limit, elf_image_t *image);
-bool elf_load_vfs_node(const struct vfs_node *node, u32 user_base, u32 user_limit, elf_image_t *image);
+bool elf_load_vfs_node(const struct vfs_node *node, page_directory_t *pd,
+                       u32 user_base, u32 user_limit, elf_image_t *image);
 
 #endif

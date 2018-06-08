@@ -1,8 +1,8 @@
 #ifndef OHOS_CONSOLE_FONT_H
 #define OHOS_CONSOLE_FONT_H
 
-#define CONSOLE_FONT_WIDTH  8
-#define CONSOLE_FONT_HEIGHT 16
+#define CONSOLE_FONT_WIDTH  12
+#define CONSOLE_FONT_HEIGHT 24
 #define CONSOLE_FONT_GLYPHS 256
 
 static const unsigned char console_font[CONSOLE_FONT_GLYPHS * CONSOLE_FONT_HEIGHT] = {

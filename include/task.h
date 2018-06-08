@@ -7,16 +7,22 @@
 #include "vfs.h"
 #include "types.h"
 
-/* User space at 32MB - above kernel heap (~0x01FF0000) so ELF loading
- * with paging disabled doesn't corrupt heap data.
- * Set to 0x02000000 to allow port-built programs (e.g. fastfetch)
- * linked at 0x02000000.  Native programs (user.ld) load at 0x03000000. */
+/* User space from 32MB to ~848MB.  The kernel identity-maps 0-896MB
+ * (paging_init shares PDEs between identity and higher-half), so the
+ * kernel heap can live anywhere below 896MB regardless of user range.
+ * Large programs (e.g. Qt6 demo linked at 0x08048000 with image_end
+ * ~154MB) fit easily.  USER_MMAP_BASE (= brk limit) must be above the
+ * program's image_end or brk will always fail. */
 #define USER_BASE      0x02000000u
-#define USER_LIMIT     0x05000000u
-#define USER_STACK_TOP 0x04FFF000u
-#define USER_TLS_ADDR  0x04FFF000u
-#define USER_MMAP_BASE 0x03C00000u
-#define USER_MMAP_TOP  0x04EF0000u
+#define USER_LIMIT     0x38000000u
+#define USER_STACK_TOP 0x36100000u
+#define USER_TLS_ADDR  0x36100000u
+#define USER_MMAP_BASE 0x20000000u
+#define USER_MMAP_TOP  0x34E00000u
+
+/* Interpreter (dynamic linker) region — just below the stack. */
+#define INTERP_BASE    0x34F00000u
+#define INTERP_LIMIT   0x36000000u
 #define TASK_MAX_FDS   32
 #define TASK_MAX_MMAPS 16
 #define TASK_MAX_SLOTS 24
@@ -40,6 +46,7 @@ typedef enum {
     TASK_FD_FB0,
     TASK_FD_NET,
     TASK_FD_KEYBOARD,
+    TASK_FD_MOUSE,
 } task_fd_kind_t;
 
 typedef struct {
@@ -93,6 +100,12 @@ typedef struct {
     
     /* Signal state */
     signal_state_t signal_state;
+
+    /* Dynamic linker support */
+    u32 interp_base;
+    u32 user_entry;
+    u32 phdr_vaddr;
+    u32 phnum;
 
     /* FPU state (512-byte FXSAVE/FXRSTOR region, 16-byte aligned) */
     u8 fpu_state[512] __attribute__((aligned(16)));

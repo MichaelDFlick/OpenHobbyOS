@@ -5,6 +5,8 @@
 #include "io.h"
 #include "keyboard.h"
 #include "memory.h"
+#include "mouse.h"
+#include "serial.h"
 #include "netdev.h"
 #include "pipe.h"
 #include "pit.h"
@@ -174,7 +176,17 @@ static int sys_ioctl(registers_t *regs) {
         termios.c_cc[4] = 0x04;
         termios.c_cc[5] = 0;
         termios.c_cc[6] = 1;
-        if (!task_is_console_fd(fd) || !task_copy_to_user(argp, &termios, sizeof(termios))) {
+        /* Accept console fds AND pipe fds — programs redirected via
+         * pipe (e.g. gosh's execute_external_captured) need isatty() to
+         * return true so they emit ANSI colors and query terminal size. */
+        task_fd_t *slot = task_fd_slot(fd);
+        if (!slot || !slot->used) return LERR_FAULT;
+        if (slot->kind != TASK_FD_CONSOLE &&
+            slot->kind != TASK_FD_PIPE_READ &&
+            slot->kind != TASK_FD_PIPE_WRITE) {
+            return LERR_FAULT;
+        }
+        if (!task_copy_to_user(argp, &termios, sizeof(termios))) {
             return LERR_FAULT;
         }
         return 0;
@@ -188,7 +200,14 @@ static int sys_ioctl(registers_t *regs) {
         winsize.ws_col = (u16)cols;
         winsize.ws_xpixel = 0;
         winsize.ws_ypixel = 0;
-        if (!task_is_console_fd(fd) || !task_copy_to_user(argp, &winsize, sizeof(winsize))) {
+        task_fd_t *slot = task_fd_slot(fd);
+        if (!slot || !slot->used) return LERR_FAULT;
+        if (slot->kind != TASK_FD_CONSOLE &&
+            slot->kind != TASK_FD_PIPE_READ &&
+            slot->kind != TASK_FD_PIPE_WRITE) {
+            return LERR_FAULT;
+        }
+        if (!task_copy_to_user(argp, &winsize, sizeof(winsize))) {
             return LERR_FAULT;
         }
         return 0;
@@ -1238,6 +1257,12 @@ static int sys_dup2(registers_t *regs) {
     }
 
     current_task.fds[newfd] = *old_slot;
+    if (old_slot->pipe && (old_slot->kind == TASK_FD_PIPE_READ || old_slot->kind == TASK_FD_PIPE_WRITE)) {
+        pipe_endpoint_t *pipe = (pipe_endpoint_t *)old_slot->pipe;
+        pipe->refcount++;
+        if (old_slot->kind == TASK_FD_PIPE_READ) pipe->read_refcount++;
+        if (old_slot->kind == TASK_FD_PIPE_WRITE) pipe->write_refcount++;
+    }
     return newfd;
 }
 
@@ -1278,13 +1303,18 @@ static int sys_poll(registers_t *regs) {
             bool can_read = false;
 
             if (slot->kind == TASK_FD_CONSOLE) {
-                can_read = console_term_resp_available() || keyboard_has_input();
+                can_read = console_term_resp_available() || keyboard_has_input_only() || serial_can_read();
             } else if (slot->kind == TASK_FD_PIPE_READ && slot->pipe) {
-                can_read = pipe_pending_readable((pipe_endpoint_t *)slot->pipe) > 0;
+                pipe_endpoint_t *p = (pipe_endpoint_t *)slot->pipe;
+                can_read = pipe_pending_readable(p) > 0 || (!p->write_open || p->peer_closed);
             } else if (slot->kind == TASK_FD_SOCKET && slot->socket) {
                 can_read = socket_pending_readable((socket_endpoint_t *)slot->socket) > 0;
             } else if (slot->kind == TASK_FD_FILE || slot->kind == TASK_FD_NULL || slot->kind == TASK_FD_FB0) {
                 can_read = true;
+            } else if (slot->kind == TASK_FD_KEYBOARD) {
+                can_read = keyboard_has_raw_scancode();
+            } else if (slot->kind == TASK_FD_MOUSE) {
+                can_read = mouse_has_event();
             }
 
             if (can_read) {
@@ -1358,6 +1388,8 @@ static int sys_pipe(registers_t *regs) {
 
     /* Increment refcount for second FD (pipe_create starts with 1) */
     pipe->refcount++;
+    pipe->read_refcount = 1;
+    pipe->write_refcount = 1;
 
     current_task.fds[readfd].used = true;
     current_task.fds[readfd].kind = TASK_FD_PIPE_READ;

@@ -2,16 +2,19 @@
 
 #include "abi/linux.h"
 #include "console.h"
+#include "crypto.h"
 #include "elf.h"
 #include "format.h"
 #include "gdt.h"
 #include "io.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "memory.h"
 #include "netdev.h"
 #include "paging.h"
 #include "panic.h"
 #include "pipe.h"
+#include "serial.h"
 #include "pit.h"
 #include "socket.h"
 #include "string.h"
@@ -96,8 +99,8 @@ typedef struct {
 
 _Static_assert(TASK_OFFSETOF(task_slot_t, regs) >= TASK_OFFSETOF(task_slot_t, state) + sizeof(task_state_t),
                "regs must not overlap state in task_slot_t");
-_Static_assert(sizeof(task_state_t) == 3200, "task_state_t size must be 3200 bytes");
-_Static_assert(TASK_OFFSETOF(task_slot_t, regs) == 3232, "regs must be at offset 3232 in task_slot_t");
+_Static_assert(sizeof(task_state_t) == 3216, "task_state_t size must be 3216 bytes");
+_Static_assert(TASK_OFFSETOF(task_slot_t, regs) == 3248, "regs must be at offset 3248 in task_slot_t");
 
 static task_slot_t task_slots[TASK_MAX_SLOTS] __attribute__((aligned(64)));
 static int active_task_slot = -1;
@@ -107,7 +110,7 @@ static int scheduler_rr_cursor = -1;
 
 typedef struct {
     const char *name;
-    const char *password;
+    u8 password_hash[32];
     u32 uid;
     u32 gid;
     const char *home;
@@ -115,8 +118,18 @@ typedef struct {
 } task_user_record_t;
 
 static const task_user_record_t task_user_db[] = {
-    {"root", "root", 0u, 0u, "/root", "/bin/gosh"},
-    {"user", "user", 1000u, 1000u, "/home/user", "/bin/gosh"},
+    {"root", {
+        0x48u, 0x13u, 0x49u, 0x4du, 0x13u, 0x7eu, 0x16u, 0x31u,
+        0xbbu, 0xa3u, 0x01u, 0xd5u, 0xacu, 0xabu, 0x6eu, 0x7bu,
+        0xb7u, 0xaau, 0x74u, 0xceu, 0x11u, 0x85u, 0xd4u, 0x56u,
+        0x56u, 0x5eu, 0xf5u, 0x1du, 0x73u, 0x76u, 0x77u, 0xb2u
+    }, 0u, 0u, "/root", "/bin/gosh"},
+    {"user", {
+        0x04u, 0xf8u, 0x99u, 0x6du, 0xa7u, 0x63u, 0xb7u, 0xa9u,
+        0x69u, 0xb1u, 0x02u, 0x8eu, 0xe3u, 0x00u, 0x75u, 0x69u,
+        0xeau, 0xf3u, 0xa6u, 0x35u, 0x48u, 0x6du, 0xdau, 0xb2u,
+        0x11u, 0xd5u, 0x12u, 0xc8u, 0x5bu, 0x9du, 0xf8u, 0xfbu
+    }, 1000u, 1000u, "/home/user", "/bin/gosh"},
 };
 
 int task_active_slot_index(void) {
@@ -156,6 +169,17 @@ static const task_user_record_t *task_find_user_record(const char *name) {
     return NULL;
 }
 
+static bool task_password_matches(const task_user_record_t *record, const char *password) {
+    u8 password_hash[32];
+
+    if (!record || !password) {
+        return false;
+    }
+
+    crypto_sha256(password, strlen(password), password_hash);
+    return crypto_constant_time_equal(password_hash, record->password_hash, sizeof(password_hash));
+}
+
 static const task_user_record_t *task_find_user_by_ids(u32 uid, u32 gid) {
     for (size_t i = 0; i < sizeof(task_user_db) / sizeof(task_user_db[0]); ++i) {
         if (task_user_db[i].uid == uid && task_user_db[i].gid == gid) {
@@ -192,7 +216,16 @@ static void task_apply_user_record(task_state_t *state, const task_user_record_t
 }
 
 static void task_apply_default_identity(task_state_t *state) {
-    static const task_user_record_t root_record = {"root", "root", 0u, 0u, "/root", "/bin/gosh"};
+    static const task_user_record_t root_record = {
+        "root",
+        {
+            0x48u, 0x13u, 0x49u, 0x4du, 0x13u, 0x7eu, 0x16u, 0x31u,
+            0xbbu, 0xa3u, 0x01u, 0xd5u, 0xacu, 0xabu, 0x6eu, 0x7bu,
+            0xb7u, 0xaau, 0x74u, 0xceu, 0x11u, 0x85u, 0xd4u, 0x56u,
+            0x56u, 0x5eu, 0xf5u, 0x1du, 0x73u, 0x76u, 0x77u, 0xb2u
+        },
+        0u, 0u, "/root", "/bin/gosh"
+    };
     task_apply_user_record(state, &root_record);
 }
 
@@ -456,6 +489,8 @@ static bool task_slot_save_state(task_slot_t *slot, const registers_t *regs) {
             (slot->state.fds[i].kind == TASK_FD_PIPE_READ || slot->state.fds[i].kind == TASK_FD_PIPE_WRITE)) {
             pipe_endpoint_t *pipe = (pipe_endpoint_t *)slot->state.fds[i].pipe;
             pipe->refcount++;
+            if (slot->state.fds[i].kind == TASK_FD_PIPE_READ) pipe->read_refcount++;
+            if (slot->state.fds[i].kind == TASK_FD_PIPE_WRITE) pipe->write_refcount++;
         }
     }
 
@@ -770,7 +805,7 @@ static bool task_prepare_user_stack(int argc, const char *const *argv, u32 *user
         return false;
     }
 
-    metadata_bytes = 16u * sizeof(u32);
+    metadata_bytes = 24u * sizeof(u32);
     metadata_bytes += (u32)(envc + argc + 3) * sizeof(u32);
     if (stack < USER_BASE + metadata_bytes) {
         return false;
@@ -784,9 +819,17 @@ static bool task_prepare_user_stack(int argc, const char *const *argv, u32 *user
 
     if (!task_push_u32(&stack, 0) ||
         !task_push_u32(&stack, LINUX_AT_NULL) ||
+        !task_push_u32(&stack, current_task.interp_base) ||
+        !task_push_u32(&stack, LINUX_AT_BASE) ||
+        !task_push_u32(&stack, current_task.phnum) ||
+        !task_push_u32(&stack, LINUX_AT_PHNUM) ||
+        !task_push_u32(&stack, 0x20u) ||
+        !task_push_u32(&stack, LINUX_AT_PHENT) ||
+        !task_push_u32(&stack, current_task.phdr_vaddr) ||
+        !task_push_u32(&stack, LINUX_AT_PHDR) ||
         !task_push_u32(&stack, execfn_ptr) ||
         !task_push_u32(&stack, LINUX_AT_EXECFN) ||
-        !task_push_u32(&stack, current_task.entry) ||
+        !task_push_u32(&stack, current_task.user_entry) ||
         !task_push_u32(&stack, LINUX_AT_ENTRY) ||
         !task_push_u32(&stack, 0) ||
         !task_push_u32(&stack, LINUX_AT_EGID) ||
@@ -862,9 +905,18 @@ static ssize_t task_console_read(void *buffer, size_t length) {
     }
 
     while (used < length) {
-        if (keyboard_has_input()) {
-            char ch = keyboard_getchar();
+        if (keyboard_has_input_only()) {
+            char ch = keyboard_getchar_only();
             if (ch == '\r') ch = '\n';
+            out[used++] = ch;
+            if (ch == '\n') break;
+            continue;
+        }
+
+        if (serial_can_read()) {
+            char ch = serial_read_char();
+            if (ch == '\r') ch = '\n';
+            if (ch == 0x7F) ch = '\b';
             out[used++] = ch;
             if (ch == '\n') break;
             continue;
@@ -919,7 +971,7 @@ void task_init(void) {
     }
     task_saved_esp = 0;
     task_exit_code = 0;
-    task_runtime_ready = memory_total_bytes() > USER_LIMIT && vfs_ready();
+    task_runtime_ready = vfs_ready();
     active_task_slot = -1;
     scheduler_root_pid = -1;
     scheduler_rr_cursor = -1;
@@ -987,7 +1039,7 @@ int task_set_credentials(u32 uid, u32 gid, u32 euid, u32 egid) {
 int task_authenticate_session(const char *username, const char *password) {
     const task_user_record_t *record = task_find_user_record(username);
 
-    if (!record || !password || strcmp(password, record->password) != 0) {
+    if (!record || !task_password_matches(record, password)) {
         return LERR_PERM;
     }
 
@@ -1042,6 +1094,7 @@ u32 task_brk(u32 requested) {
     page_directory_t *pd = page_directory_get_current();
 
     if (!current_task.active && !current_task.brk) {
+        console_printf("[brk] inactive+no_brk\n");
         return 0;
     }
 
@@ -1050,32 +1103,57 @@ u32 task_brk(u32 requested) {
     }
 
     if (requested < current_task.brk_base || requested >= current_task.brk_limit) {
+        console_printf("[brk] range fail: req=%x base=%x limit=%x brk=%x\n",
+            requested, current_task.brk_base, current_task.brk_limit, current_task.brk);
         return current_task.brk;
     }
 
     if (requested > current_task.brk &&
         task_mapping_overlaps(current_task.brk, requested - current_task.brk)) {
+        console_printf("[brk] overlap fail: req=%x brk=%x delta=%x\n",
+            requested, current_task.brk, requested - current_task.brk);
         return current_task.brk;
     }
 
     if (requested > current_task.brk) {
         /* Allocate pages for the expanded heap */
-        u32 start_page = (current_task.brk + PAGE_SIZE - 1) & PAGE_MASK;
-        u32 end_page = requested & PAGE_MASK;
+        u32 start_page = current_task.brk & PAGE_MASK;
+        u32 end_page = (requested - 1) & PAGE_MASK;
+
+        console_printf("[brk] expanding: brk=%x -> %x pages=%x-%x\n",
+            current_task.brk, requested, start_page, end_page);
 
         for (u32 va = start_page; va <= end_page; va += PAGE_SIZE) {
-            if (!page_is_present(pd, va)) {
+            /* Only skip the page if we have a private page table
+             * (PTE_ALLOCATED on PDE) AND the PTE already has user
+             * permission.  A privatized PDE may still contain stale
+             * kernel identity PTEs (copied from the shared kernel
+             * page table) which are present but supervisor-only. */
+            bool needs_map = true;
+            u32 brk_pd_idx = virt_to_pd_index(va);
+            if ((pd->entries[brk_pd_idx] & PTE_PRESENT) &&
+                (pd->entries[brk_pd_idx] & PTE_ALLOCATED)) {
+                u32 brk_pt_phys = entry_get_phys(pd->entries[brk_pd_idx]);
+                page_table_t *brk_pt = (page_table_t *)(KERNEL_VIRTUAL_BASE + brk_pt_phys);
+                u32 brk_pt_idx = virt_to_pt_index(va);
+                needs_map = !(brk_pt->entries[brk_pt_idx] & PTE_USER);
+            }
+            if (needs_map) {
+                console_printf("[brk]  alloc_page va=%x\n", va);
                 if (!paging_alloc_user_page(pd, va, PTE_USER | PTE_RW)) {
-                    /* Failed to allocate - return current brk */
+                    console_printf("[brk]  alloc_page FAILED va=%x\n", va);
                     return current_task.brk;
                 }
             }
         }
 
         memset((void *)(uintptr_t)current_task.brk, 0, requested - current_task.brk);
+    } else if (requested < current_task.brk) {
+        console_printf("[brk] shrinking: brk=%x -> %x\n", current_task.brk, requested);
     }
 
     current_task.brk = requested;
+    console_printf("[brk] success: brk=%x\n", current_task.brk);
     return current_task.brk;
 }
 
@@ -1279,30 +1357,9 @@ static int task_seed_slot(task_slot_t *slot,
             return LERR_NOMEM;
         }
     }
-    /* Read ELF file into kernel buffer BEFORE switching page directory */
-    u32 elf_sz = vfs_file_size(node);
-    if (elf_sz == 0 || elf_sz > 16 * 1024 * 1024) {
-        page_directory_destroy(pd);
-        return LERR_NOENT;
-    }
-    u8 *elf_buf = kmalloc(elf_sz);
-    if (!elf_buf) {
-        page_directory_destroy(pd);
-        return LERR_NOMEM;
-    }
-    ssize_t nread = vfs_read(node, 0, elf_buf, elf_sz);
-    if (nread != (ssize_t)elf_sz) {
-        kfree(elf_buf);
-        page_directory_destroy(pd);
-        return LERR_NOENT;
-    }
-
     page_directory_t *old_pd = page_directory_get_current();
-    page_directory_switch(pd);
-
-    bool elf_ok = elf_load_paged(node, pd, USER_BASE, USER_LIMIT, &image, elf_buf, elf_sz);
-    page_directory_switch(old_pd);
-    kfree(elf_buf);
+    (void)old_pd;
+    bool elf_ok = elf_load_vfs_node(node, pd, USER_BASE, USER_LIMIT, &image);
 
     if (!elf_ok) {
         console_printf("[spawn] ELF load fail for '%s' size=%u\n",
@@ -1312,8 +1369,8 @@ static int task_seed_slot(task_slot_t *slot,
     }
 
     /* Prepare user stack in new address space */
-    /* Map stack pages (grows down from USER_STACK_TOP) */
-    for (u32 va = USER_STACK_TOP - 0x40000; va < USER_STACK_TOP; va += PAGE_SIZE) {
+    /* Map user stack (2 MB for Qt6) */
+    for (u32 va = USER_STACK_TOP - 0x200000; va < USER_STACK_TOP; va += PAGE_SIZE) {
         if (!paging_alloc_user_page(pd, va, PTE_RW | PTE_USER)) {
             page_directory_switch(old_pd);
             page_directory_destroy(pd);
@@ -1328,10 +1385,34 @@ static int task_seed_slot(task_slot_t *slot,
     strncpy(current_task.cwd_path,
             (parent_state && parent_state->cwd_path[0]) ? parent_state->cwd_path : "/",
             sizeof(current_task.cwd_path) - 1);
-    current_task.entry = image.entry;
+
+    current_task.user_entry = image.entry;
+    current_task.interp_base = 0;
+    current_task.phdr_vaddr = image.phdr_vaddr;
+    current_task.phnum = image.phnum;
+
+    /* If the main program has an interpreter (dynamic linker), load it. */
+    if (image.interp_path[0] != '\0' && image.phdr_vaddr != 0) {
+        const vfs_node_t *interp_node = task_resolve_path_internal(vfs_root(), image.interp_path);
+        elf_image_t interp_image;
+        if (interp_node && vfs_is_file(interp_node)) {
+            if (elf_load_vfs_node(interp_node, pd, INTERP_BASE, INTERP_LIMIT, &interp_image)) {
+                current_task.entry = interp_image.entry;
+                current_task.interp_base = interp_image.image_end;
+            } else {
+                console_printf("[spawn] interp ELF load fail for '%s'\n", image.interp_path);
+            }
+        } else {
+            console_printf("[spawn] interp '%s' not found, running directly\n", image.interp_path);
+            current_task.entry = image.entry;
+        }
+    } else {
+        current_task.entry = image.entry;
+    }
+
     current_task.brk_base = image.image_end;
     current_task.brk = image.image_end;
-    current_task.brk_limit = USER_MMAP_BASE; /* Use mmap base as brk limit */
+    current_task.brk_limit = USER_MMAP_BASE;
     current_task.pid = next_pid++;
     if (parent_state) {
         current_task.uid = parent_state->uid;
@@ -1386,6 +1467,12 @@ static int task_seed_slot(task_slot_t *slot,
     /* Canary at %gs:0x14 */
     *(u32 *)(tls_gs_base + 0x14) = 0xFF0A0000;
     slot->tls_vaddr = tls_gs_base;
+
+    /* Update GDT so %gs:0x14 resolves to the new TLS canary immediately.
+     * gdt_set_gs_base is normally called during task_slot_activate, but
+     * this task hasn't been scheduled yet — first execution comes from
+     * the syscall return path. */
+    gdt_set_gs_base(tls_gs_base);
 
     if (!task_prepare_user_stack(argc, argv, &user_stack)) {
         page_directory_switch(old_pd);
@@ -1751,6 +1838,9 @@ int task_open_relative(int dirfd, const char *path, int flags, int mode) {
     if (strcmp(node_path, "/dev/keyboard") == 0) {
         return task_install_fd(TASK_FD_KEYBOARD, node, flags);
     }
+    if (strcmp(node_path, "/dev/mouse") == 0) {
+        return task_install_fd(TASK_FD_MOUSE, node, flags);
+    }
 
     if (!task_node_access_allowed(node, want_write ? LINUX_W_OK : LINUX_R_OK)) {
         return LERR_ACCES;
@@ -1916,6 +2006,14 @@ ssize_t task_read_fd(int fd, void *buffer, size_t length) {
         if (!keyboard_has_raw_scancode()) return LERR_AGAIN;
         *(u8 *)buffer = keyboard_read_raw_scancode();
         return 1;
+    }
+
+    if (slot->kind == TASK_FD_MOUSE) {
+        if (length < sizeof(mouse_event_t)) return 0;
+        if (!mouse_has_event()) return LERR_AGAIN;
+        mouse_event_t ev = mouse_read_event();
+        memcpy(buffer, &ev, sizeof(ev));
+        return sizeof(mouse_event_t);
     }
 
     return LERR_BADF;
@@ -2583,40 +2681,18 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
         return LERR_NOMEM;
     }
 
-    /* Read ELF file into kernel buffer BEFORE switching page directory */
-    u32 elf_sz = vfs_file_size(node);
-    if (elf_sz == 0 || elf_sz > 16 * 1024 * 1024) {
-        page_directory_destroy(new_pd);
-        return LERR_NOENT;
-    }
-    u8 *elf_buf = kmalloc(elf_sz);
-    if (!elf_buf) {
-        page_directory_destroy(new_pd);
-        return LERR_NOMEM;
-    }
-    ssize_t nread = vfs_read(node, 0, elf_buf, elf_sz);
-    if (nread != (ssize_t)elf_sz) {
-        kfree(elf_buf);
-        page_directory_destroy(new_pd);
-        return LERR_NOENT;
-    }
-
-    /* Switch to new page directory to load ELF */
+    /* Load ELF into the new page directory while keeping the kernel page table active. */
     old_pd = page_directory_get_current();
-    page_directory_switch(new_pd);
-
-    /* Load ELF into new page directory */
-    bool elf_ok = elf_load_paged(node, new_pd, USER_BASE, USER_LIMIT, &image, elf_buf, elf_sz);
-    page_directory_switch(old_pd);
-    kfree(elf_buf);
+    bool elf_ok = elf_load_vfs_node(node, new_pd, USER_BASE, USER_LIMIT, &image);
+    (void)old_pd;
 
     if (!elf_ok) {
         page_directory_destroy(new_pd);
         return LERR_NOENT;
     }
 
-    /* Map stack pages */
-    for (u32 va = USER_STACK_TOP - 0x10000; va < USER_STACK_TOP; va += PAGE_SIZE) {
+    /* Map stack pages (Qt6 needs 512 KB; must not overlap interpreter at 0x34F00000-0x36000000) */
+    for (u32 va = USER_STACK_TOP - 0x80000; va < USER_STACK_TOP; va += PAGE_SIZE) {
         if (!paging_alloc_user_page(new_pd, va, PTE_RW | PTE_USER)) {
             page_directory_switch(old_pd);
             page_directory_destroy(new_pd);
@@ -2627,7 +2703,29 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
     /* Prepare stack in new address space */
     strncpy(current_task.name, vfs_name(node), sizeof(current_task.name) - 1);
     strncpy(current_task.path, vfs_path(node), sizeof(current_task.path) - 1);
-    current_task.entry = image.entry;
+
+    current_task.user_entry = image.entry;
+    current_task.interp_base = 0;
+    current_task.phdr_vaddr = image.phdr_vaddr;
+    current_task.phnum = image.phnum;
+
+    if (image.interp_path[0] != '\0' && image.phdr_vaddr != 0) {
+        const vfs_node_t *interp_node = task_resolve_path_internal(vfs_root(), image.interp_path);
+        elf_image_t interp_image;
+        if (interp_node && vfs_is_file(interp_node)) {
+            if (elf_load_vfs_node(interp_node, new_pd, INTERP_BASE, INTERP_LIMIT, &interp_image)) {
+                current_task.entry = interp_image.entry;
+                current_task.interp_base = interp_image.image_end;
+            } else {
+                current_task.entry = image.entry;
+            }
+        } else {
+            current_task.entry = image.entry;
+        }
+    } else {
+        current_task.entry = image.entry;
+    }
+
     current_task.brk_base = image.image_end;
     current_task.brk = image.image_end;
     current_task.brk_limit = USER_MMAP_BASE;
@@ -2680,6 +2778,28 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
     if (slot) {
         /* Destroy old page directory */
         if (slot->page_directory) {
+            /*
+             * Clear PTE_ALLOCATED on CoW entries inherited from fork so
+             * page_directory_destroy does not free physical frames that
+             * are still mapped in the parent process.  Without this,
+             * fork+exec frees shared CoW pages, and the parent reads
+             * stale/corrupted data (often zeros) from reallocated frames.
+             */
+            {
+                page_directory_t *opd = slot->page_directory;
+                for (u32 opi = 0; opi < KERNEL_PD_INDEX; opi++) {
+                    if (!(opd->entries[opi] & PTE_PRESENT)) continue;
+                    if (!(opd->entries[opi] & PTE_ALLOCATED)) continue;
+                    u32 opt_phys = entry_get_phys(opd->entries[opi]);
+                    page_table_t *opt = (page_table_t *)(KERNEL_VIRTUAL_BASE + opt_phys);
+                    for (u32 oj = 0; oj < ENTRIES_PER_PT; oj++) {
+                        if ((opt->entries[oj] & PTE_PRESENT) &&
+                            (opt->entries[oj] & PTE_COW)) {
+                            opt->entries[oj] &= ~PTE_ALLOCATED;
+                        }
+                    }
+                }
+            }
             /* Temporarily switch to new PD so we can destroy the old one safely */
             page_directory_switch(old_pd);
             page_directory_destroy(slot->page_directory);
@@ -2690,6 +2810,11 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
             slot->page_directory_phys = pd_vaddr >= KERNEL_VIRTUAL_BASE ? pd_vaddr - KERNEL_VIRTUAL_BASE : pd_vaddr;
         }
         slot->tls_vaddr = tls_gs_base;
+
+        /* Update GDT so %gs:0x14 resolves to the new TLS canary.
+         * Without this, the stack protector check compares against the
+         * OLD process's canary and blows up with "stack smashing detected". */
+        gdt_set_gs_base(tls_gs_base);
     }
 
     /* Switch to new page directory permanently */
@@ -2866,10 +2991,6 @@ int task_waitpid_from_user(int pid, void *status_ptr, int options, registers_t *
     if (!parent || !regs) {
         return LERR_INVAL;
     }
-    if (options != 0) {
-        return LERR_INVAL;
-    }
-
     result = task_reap_matching_child(parent, pid, status_ptr);
     if (result != 0) {
         return result;
@@ -2877,6 +2998,10 @@ int task_waitpid_from_user(int pid, void *status_ptr, int options, registers_t *
 
     if (!task_has_matching_child((int)parent->state.pid, pid)) {
         return LERR_CHILD;
+    }
+
+    if (options & 1) { /* WNOHANG — child still running */
+        return 0;
     }
 
     if (!task_slot_save_state(parent, regs)) {
@@ -3082,6 +3207,24 @@ void task_timer_tick(registers_t *regs) {
 NORETURN void task_exit_current(int exit_code) {
     task_slot_t *slot = task_active_slot();
 
+    /* Close all non-console file descriptors so pipe/socket refcounts
+     * are properly decremented and the peer sees EOF / POLLIN. */
+    for (int i = 0; i < TASK_MAX_FDS; i++) {
+        task_fd_t *fdslot = &current_task.fds[i];
+        if (!fdslot->used) continue;
+        if (i < 3 && fdslot->kind == TASK_FD_CONSOLE) continue;
+        if (fdslot->kind == TASK_FD_PIPE_READ && fdslot->pipe) {
+            pipe_close_read((pipe_endpoint_t *)fdslot->pipe);
+            pipe_release((pipe_endpoint_t *)fdslot->pipe);
+        } else if (fdslot->kind == TASK_FD_PIPE_WRITE && fdslot->pipe) {
+            pipe_close_write((pipe_endpoint_t *)fdslot->pipe);
+            pipe_release((pipe_endpoint_t *)fdslot->pipe);
+        } else if (fdslot->kind == TASK_FD_SOCKET && fdslot->socket) {
+            socket_release((socket_endpoint_t *)fdslot->socket);
+        }
+        memset(fdslot, 0, sizeof(*fdslot));
+    }
+
     current_task.active = false;
     if (slot != NULL) {
         slot->state = current_task;
@@ -3131,6 +3274,24 @@ NORETURN void task_abort_from_trap(registers_t *regs, const char *reason) {
                        last_syscall.useresp);
     }
     console_hexdump(regs, 96, 0);
+
+    /* Close non-console fds so pipe/socket peers see EOF */
+    for (int i = 0; i < TASK_MAX_FDS; i++) {
+        task_fd_t *fs = &current_task.fds[i];
+        if (!fs->used) continue;
+        if (i < 3 && fs->kind == TASK_FD_CONSOLE) continue;
+        if (fs->kind == TASK_FD_PIPE_READ && fs->pipe) {
+            pipe_close_read((pipe_endpoint_t *)fs->pipe);
+            pipe_release((pipe_endpoint_t *)fs->pipe);
+        } else if (fs->kind == TASK_FD_PIPE_WRITE && fs->pipe) {
+            pipe_close_write((pipe_endpoint_t *)fs->pipe);
+            pipe_release((pipe_endpoint_t *)fs->pipe);
+        } else if (fs->kind == TASK_FD_SOCKET && fs->socket) {
+            socket_release((socket_endpoint_t *)fs->socket);
+        }
+        memset(fs, 0, sizeof(*fs));
+    }
+
     current_task.active = false;
     if (task_active_slot() != NULL) {
         task_active_slot()->state = current_task;

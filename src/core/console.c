@@ -2,6 +2,7 @@
 #include "console_font.h"
 
 #include "format.h"
+#include "initrd.h"
 #include "io.h"
 #include "memory.h"
 #include "paging.h"
@@ -156,6 +157,10 @@ static const u32 console_ansi_colours[16] = {
     0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,
 };
 
+void console_load_ttf(void) {
+    console_write("[fb] TTF font loading disabled (freetype removed)\n");
+}
+
 static int console_draw_cb(struct tsm_screen *con, uint64_t id,
                            const uint32_t *ch, size_t len,
                            unsigned int width,
@@ -209,6 +214,13 @@ static int console_draw_cb(struct tsm_screen *con, uint64_t id,
         (bg_col >> 16) & 0xFF, (bg_col >> 8) & 0xFF, bg_col & 0xFF);
 
     unsigned int top_margin = (font_h - font_w) / 2u;
+
+    u8 fg_r = (fg_col >> 16) & 0xFF;
+    u8 fg_g = (fg_col >> 8) & 0xFF;
+    u8 fg_b = fg_col & 0xFF;
+    u8 bg_r = (bg_col >> 16) & 0xFF;
+    u8 bg_g = (bg_col >> 8) & 0xFF;
+    u8 bg_b = bg_col & 0xFF;
 
     for (unsigned int row = 0; row < font_h; ++row) {
         unsigned char font_byte;

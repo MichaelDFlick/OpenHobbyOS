@@ -49,4 +49,8 @@ static inline void cpu_halt(void) {
     __asm__ volatile ("hlt");
 }
 
+static inline void cpu_pause(void) {
+    __asm__ volatile ("rep; nop");
+}
+
 #endif

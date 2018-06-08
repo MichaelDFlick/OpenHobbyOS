@@ -149,7 +149,17 @@ void keyboard_init(void) {
 }
 
 bool keyboard_has_input(void) {
-    return input_head != input_tail || serial_can_read();
+    return input_head != input_tail;
+}
+
+static char key_fallback_serial(void) {
+    if (serial_can_read()) {
+        char ch = serial_read_char();
+        if (ch == '\r') return '\n';
+        if (ch == 0x7F) return '\b';
+        return ch;
+    }
+    return 0;
 }
 
 char keyboard_getchar(void) {
@@ -159,20 +169,23 @@ char keyboard_getchar(void) {
             input_tail = (input_tail + 1u) % KEYBOARD_BUFFER_SIZE;
             return ch;
         }
-
-        if (serial_can_read()) {
-            char ch = serial_read_char();
-            if (ch == '\r') {
-                return '\n';
-            }
-            if (ch == 0x7F) {
-                return '\b';
-            }
-            return ch;
-        }
-
+        char s = key_fallback_serial();
+        if (s) return s;
         cpu_halt();
     }
+}
+
+bool keyboard_has_input_only(void) {
+    return input_head != input_tail;
+}
+
+char keyboard_getchar_only(void) {
+    while (input_head == input_tail) {
+        cpu_halt();
+    }
+    char ch = input_buffer[input_tail];
+    input_tail = (input_tail + 1u) % KEYBOARD_BUFFER_SIZE;
+    return ch;
 }
 
 size_t keyboard_readline(char *buffer, size_t size) {

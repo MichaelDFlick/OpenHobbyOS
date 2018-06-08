@@ -49,15 +49,8 @@ bool frame_alloc_init(u32 memory_start, u32 memory_end, u32 first_frame) {
     memset(g_frame_allocator.bitmap, 0, bitmap_size);
     g_frame_allocator.total_frames = num_frames;
     g_frame_allocator.used_frames = 0;
-    g_frame_allocator.first_frame = first_frame;
-    
-    /* Mark frames before first_frame as used */
-    for (u32 i = 0; i < first_frame; i++) {
-        u32 idx = i / 32;
-        u32 bit = i % 32;
-        g_frame_allocator.bitmap[idx] |= (1U << bit);
-        g_frame_allocator.used_frames++;
-    }
+    g_frame_allocator.first_frame = memory_start / PAGE_SIZE;
+    (void)first_frame;
     
     console_printf("[paging] frame allocator: %u frames (%u MiB), bitmap at %p\n",
                    num_frames, total_memory / (1024 * 1024), g_frame_allocator.bitmap);
@@ -120,22 +113,18 @@ page_directory_t *page_directory_create(void) {
 
     if (kernel_page_directory) {
         /*
-         * Copy all kernel identity-mapped PDEs except those in the user
-         * address range (32–80 MB, PDE indices 8–19).  PDEs 0–7 cover
-         * kernel data structures (code, heap, kmalloc'd page directories).
-         * PDEs 20+ cover any remaining identity mappings (e.g. a
-         * framebuffer at a high physical address).  Skipping only the
-         * user-range PDEs forces page_map to allocate fresh page tables
-         * with the correct user-bit (PTE_USER) set when user pages are
-         * mapped, eliminating the ghost supervisor-only PTEs that cause
-         * protection violations.
+         * Copy all kernel identity-mapped PDEs into the user PD so the
+         * kernel heap (which may sit at physical addresses anywhere in
+         * the 0-896 MB identity window) remains accessible when the user
+         * page directory is active.  The PTEs themselves are supervisor-
+         * only (no PTE_USER), so user code cannot touch kernel heap pages.
+         * page_map() checks PTE_ALLOCATED and will allocate a fresh page
+         * table if the PDE is a shared kernel table, preventing user page
+         * mappings from corrupting kernel heap page tables.
          * Clear PTE_ALLOCATED so page_directory_destroy knows these page
          * tables belong to the kernel.
          */
         for (u32 i = 0; i < KERNEL_PD_INDEX; i++) {
-            if (i >= (USER_BASE >> 22) && i < (USER_LIMIT >> 22)) {
-                continue;
-            }
             if (kernel_page_directory->entries[i] & PTE_PRESENT) {
                 pd->entries[i] = kernel_page_directory->entries[i] & ~PTE_ALLOCATED;
             }
@@ -144,6 +133,27 @@ page_directory_t *page_directory_create(void) {
         /* Copy kernel higher-half mappings (768-1023 = 3GB-4GB) */
         for (int i = KERNEL_PD_INDEX; i < ENTRIES_PER_PD; i++) {
             pd->entries[i] = kernel_page_directory->entries[i];
+        }
+
+        /*
+         * Eagerly map physical page 0 with user read/write permission so
+         * programs (gosh, Qt6, etc.) can read legacy IVT/BDA data without
+         * triggering a NULL page fault.  We allocate a private page table
+         * for PDE[0] (replacing the shared kernel identity PT), copy the
+         * existing kernel identity PTEs, then set PTE_USER on PTE[0].
+         */
+        if ((pd->entries[0] & PTE_PRESENT) && !(pd->entries[0] & PTE_ALLOCATED)) {
+            u32 old_pt_phys = entry_get_phys(pd->entries[0]);
+            page_table_t *old_pt = ptable_ptr(old_pt_phys);
+
+            u32 pt_phys = frame_alloc();
+            if (pt_phys) {
+                page_table_t *pt = ptable_ptr(pt_phys);
+                memcpy(pt, old_pt, sizeof(page_table_t));
+                pt->entries[0] = entry_create(0, PTE_PRESENT | PTE_USER | PTE_RW);
+                pd->entries[0] = entry_create(pt_phys,
+                    PTE_PRESENT | PTE_RW | PTE_ALLOCATED | PTE_USER);
+            }
         }
     }
 
@@ -201,7 +211,7 @@ void page_directory_switch(page_directory_t *pd) {
 
 page_directory_t *page_directory_get_current(void) {
     u32 phys = paging_get_cr3();
-    if (kernel_page_directory && phys == (u32)(uintptr_t)kernel_page_directory) {
+    if (kernel_page_directory && phys == kernel_page_directory_phys) {
         return kernel_page_directory;
     }
     return (page_directory_t *)(KERNEL_VIRTUAL_BASE + phys);
@@ -241,6 +251,36 @@ bool page_map(page_directory_t *pd, u32 virt_addr, u32 phys_addr, u16 flags) {
         
         pt = ptable_ptr( pt_phys);
         memset(pt, 0, sizeof(page_table_t));
+    } else if (pd != kernel_page_directory && !(pd->entries[pd_idx] & PTE_ALLOCATED)) {
+        /*
+         * PDE was copied from the kernel (shared identity mapping).
+         * Allocate a private page table so we don't corrupt kernel heap
+         * page table entries with user mappings.
+         *
+         * IMPORTANT: Copy the existing kernel identity PTEs so the kernel
+         * can still access physical memory via identity mapping in this
+         * 4M window.  Without this, the CoW handler's memcpy((void*)phys)
+         * faults when the physical address falls in a PDE whose shared
+         * kernel identity PT was replaced with a private (mostly-zero) PT.
+         */
+        u32 old_pt_phys = entry_get_phys(pd->entries[pd_idx]);
+        page_table_t *old_pt = ptable_ptr(old_pt_phys);
+
+        u32 pt_phys = frame_alloc();
+        if (!pt_phys) return false;
+        
+        u16 pde_flags = PTE_PRESENT | PTE_RW | PTE_ALLOCATED;
+        if (flags & PTE_USER) pde_flags |= PTE_USER;
+        pd->entries[pd_idx] = entry_create(pt_phys, pde_flags);
+        
+        pt = ptable_ptr( pt_phys);
+        memcpy(pt, old_pt, sizeof(page_table_t));
+
+        /* PDE topology changed — flush entire TLB (not just one page) to
+         * discard stale identity-mapped entries for the whole 4M window.
+         * A single invlpg is insufficient because the PDE changed for all
+         * 1024 PTEs in this 4M region. */
+        paging_flush_tlb();
     } else {
         u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
         pt = ptable_ptr( pt_phys);
@@ -249,14 +289,13 @@ bool page_map(page_directory_t *pd, u32 virt_addr, u32 phys_addr, u16 flags) {
         if ((flags & PTE_USER) && !(pd->entries[pd_idx] & PTE_USER)) {
             pd->entries[pd_idx] |= PTE_USER;
         }
+        
+        /* Existing PDE — only this one PTE changed */
+        paging_invalidate_tlb(virt_addr);
     }
     
     /* Set the page table entry */
     pt->entries[pt_idx] = entry_create(phys_addr, flags | PTE_PRESENT | PTE_ALLOCATED);
-
-    
-    /* Invalidate TLB for this page */
-    paging_invalidate_tlb(virt_addr);
     
     return true;
 }
@@ -280,6 +319,22 @@ bool page_map_existing(page_directory_t *pd, u32 virt_addr, u32 phys_addr, u16 f
         pd->entries[pd_idx] = entry_create(pt_phys, pde_flags);
         pt = ptable_ptr( pt_phys);
         memset(pt, 0, sizeof(page_table_t));
+    } else if (pd != kernel_page_directory && !(pd->entries[pd_idx] & PTE_ALLOCATED)) {
+        /* Shared kernel PDE in a user PD — allocate private page table */
+        u32 old_pt_phys = entry_get_phys(pd->entries[pd_idx]);
+        page_table_t *old_pt = ptable_ptr(old_pt_phys);
+
+        u32 pt_phys = frame_alloc();
+        if (!pt_phys) return false;
+
+        u16 pde_flags = PTE_PRESENT | PTE_RW | PTE_ALLOCATED;
+        if (flags & PTE_USER) pde_flags |= PTE_USER;
+        pd->entries[pd_idx] = entry_create(pt_phys, pde_flags);
+        pt = ptable_ptr( pt_phys);
+        memcpy(pt, old_pt, sizeof(page_table_t));
+
+        /* Full TLB flush — PDE topology changed for entire 4M window */
+        paging_flush_tlb();
     } else {
         u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
         pt = ptable_ptr( pt_phys);
@@ -310,9 +365,19 @@ bool page_unmap(page_directory_t *pd, u32 virt_addr) {
     }
     
     u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
-    page_table_t *pt = ptable_ptr( pt_phys);
+    page_table_t *pt = ptable_ptr(pt_phys);
+    u32 pte = pt->entries[pt_idx];
+
+    if (!(pte & PTE_PRESENT)) {
+        return false;
+    }
+
+    if (pte & PTE_ALLOCATED) {
+        frame_free(entry_get_phys(pte));
+    }
+    pt->entries[pt_idx] = 0;
     paging_invalidate_tlb(virt_addr);
-    
+
     return true;
 }
 
@@ -431,6 +496,17 @@ bool paging_alloc_user_page(page_directory_t *pd, u32 virt_addr, u16 flags) {
         return false;
     }
     
+    /* Zero the page to prevent information leaks and fix uninitialized
+     * TLS data. Switch to the target PD so the virtual address resolves. */
+    page_directory_t *old_pd = page_directory_get_current();
+    if (old_pd != pd) {
+        page_directory_switch(pd);
+        paging_flush_tlb();
+        memset((void *)(uintptr_t)virt_addr, 0, PAGE_SIZE);
+        page_directory_switch(old_pd);
+    } else {
+        memset((void *)(uintptr_t)virt_addr, 0, PAGE_SIZE);
+    }
     
     return true;
 }
@@ -493,15 +569,14 @@ bool paging_copy_page(page_directory_t *src_pd, page_directory_t *dst_pd,
         u32 dst_phys = frame_alloc();
         if (!dst_phys) return false;
         
-        /* Map temporarily to copy */
-        u32 temp_virt = KERNEL_VIRTUAL_BASE - PAGE_SIZE;
-        page_map(kernel_page_directory, temp_virt, dst_phys, PTE_RW);
-        
-        /* Copy page data */
-        memcpy((void *)temp_virt, (void *)(uintptr_t)src_phys, PAGE_SIZE);
-        
-        /* Unmap temporary */
-        page_unmap(kernel_page_directory, temp_virt);
+        /* Use identity mapping for direct physical memory access.
+         * PDEs 0-767 (identity half) and the framebuffer at PDE 1012
+         * are shared by all page directories.  KERNEL_VIRTUAL_BASE + phys
+         * overflows for MMIO addresses above 1 GB (e.g. framebuffer at
+         * 0xFD000000), so we use phys directly. */
+        memcpy((void *)(uintptr_t)dst_phys,
+               (void *)(uintptr_t)src_phys,
+               PAGE_SIZE);
         
         /* Map in destination with original flags */
         if (!page_map(dst_pd, virt_addr, dst_phys, src_flags)) {
@@ -572,11 +647,8 @@ static bool handle_demand_anon(page_directory_t *pd, u32 virt_addr, bool for_wri
     u32 phys = frame_alloc();
     if (!phys) return false;
     
-    /* Zero the page (demand-zero semantics) */
-    u32 temp_virt = KERNEL_VIRTUAL_BASE - PAGE_SIZE * 3;
-    page_map(kernel_page_directory, temp_virt, phys, PTE_RW);
-    memset((void *)temp_virt, 0, PAGE_SIZE);
-    page_unmap(kernel_page_directory, temp_virt);
+    /* Zero the page (demand-zero semantics) using higher-half mapping */
+    memset((void *)(uintptr_t)(KERNEL_VIRTUAL_BASE + phys), 0, PAGE_SIZE);
     
     /* Update page table entry */
     pt->entries[pt_idx] = entry_create(phys, desired_flags | PTE_PRESENT | PTE_ALLOCATED);
@@ -590,6 +662,12 @@ static bool handle_demand_anon(page_directory_t *pd, u32 virt_addr, bool for_wri
  * Page Fault Handler
  */
 
+/* 
+ * The God-forsaken Page Fault Handler.
+ * If we're here, either the user screwed up, or the kernel is trying to do 
+ * something clever (like COW or demand paging). Or, more likely, I've 
+ * fundamentally misunderstood how x86 paging works today.
+ */
 void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
     bool present = error_code & PF_ERR_PRESENT;
     bool rw = error_code & PF_ERR_RW;
@@ -597,48 +675,126 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
     bool reserved = error_code & PF_ERR_RESERVED;
     bool fetch = error_code & PF_ERR_FETCH;
     
-    /* Get current page directory */
+    /* Pull the current PD. If this returns NULL, we're already dead. */
     page_directory_t *pd = page_directory_get_current();
     
-    /* Check for copy-on-write */
+    /* 
+     * Copy-on-Write (COW) logic.
+     * This is where we pretend we're efficient by sharing memory until someone 
+     * actually tries to write to it. Then we scramble to allocate a new frame 
+     * and copy the data before the CPU notices.
+     */
     if (present && rw && !reserved) {
         u32 pd_idx = virt_to_pd_index(virt_addr);
         u32 pt_idx = virt_to_pt_index(virt_addr);
         
         if (pd->entries[pd_idx] & PTE_PRESENT) {
             u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
-            page_table_t *pt = ptable_ptr( pt_phys);
+            page_table_t *pt = ptable_ptr(pt_phys);
             
             if ((pt->entries[pt_idx] & PTE_PRESENT) && 
                 (pt->entries[pt_idx] & PTE_COW)) {
                 
-                /* Copy the page */
+                /* 
+                 * The moment of truth. Someone wrote to a shared page.
+                 * Allocate a fresh frame and get to copying.
+                 */
                 u32 old_phys = entry_get_phys(pt->entries[pt_idx]);
                 u32 new_phys = frame_alloc();
                 
                 if (!new_phys) {
-                    console_printf("[page_fault] OOM in COW handler\n");
+                    console_printf("[page_fault] Out of memory in COW handler. We are well and truly fucked.\n");
                     task_abort_from_trap(regs, "page fault (OOM)");
                     return;
                 }
                 
-                /* Map temporarily to copy */
-                u32 temp_virt = KERNEL_VIRTUAL_BASE - PAGE_SIZE * 2;
-                page_map(kernel_page_directory, temp_virt, new_phys, PTE_RW);
-                memcpy((void *)temp_virt, (void *)(uintptr_t)old_phys, PAGE_SIZE);
-                page_unmap(kernel_page_directory, temp_virt);
+                /* 
+                 * Access physical memory via the identity mapping.
+                 * PDEs 0-767 and the framebuffer PDE 1012 are shared
+                 * across all page directories.  KERNEL_VIRTUAL_BASE +
+                 * phys overflows for MMIO addresses above 1 GB (e.g.
+                 * framebuffer at 0xFD000000), so use phys directly.
+                 */
+                memcpy((void *)(uintptr_t)new_phys,
+                       (void *)(uintptr_t)old_phys,
+                       PAGE_SIZE);
                 
-                /* Update mapping to new frame with write permission */
+                /* Upgrade the mapping to writable and mark it as ours. */
                 u32 flags = entry_get_flags(pt->entries[pt_idx]);
                 pt->entries[pt_idx] = entry_create(new_phys, 
                     (flags & ~PTE_COW) | PTE_RW | PTE_ALLOCATED);
+                
+                /* Tell the CPU to forget everything it knows about this address. */
                 paging_invalidate_tlb(virt_addr);
                 
-                return; /* Success */
+                return;
             }
         }
     }
     
+    /*
+     * Legacy NULL page compatibility for programs like Qt6.
+     * Some programs (notably Qt6 platform init) read from and write to
+     * addresses 0x0000–0x0FFF (legacy IVT/BDA probe).  The kernel
+     * identity-maps physical page 0 but without PTE_USER, so the first
+     * user access faults.  We catch these faults and map the page with
+     * full user read/write permission on demand.
+     *
+     * We map the REAL physical page 0 — the kernel does not rely on
+     * legacy IVT/BDA data at runtime and uses its own GDT/IDT, so
+     * allowing user writes to this page is safe on this system.
+     *
+     * IMPORTANT: The kernel is linked at 1 MB and runs identity-mapped
+     * through PDE[0].  When we replace PDE[0] we must preserve ALL
+     * existing kernel identity mappings (kernel code/data, etc.) —
+     * otherwise the TLB will eventually evict the stale entries and
+     * the next kernel instruction fetch blows up with a triple fault.
+     */
+    if (present && user && virt_addr < 0x1000) {
+        console_printf("[page_fault] NULL page compat: va=%x pd=%p PDE=%x\n",
+                       virt_addr, (void*)pd, pd->entries[0]);
+        u32 null_pd_idx = virt_to_pd_index(virt_addr);
+        if (!(pd->entries[null_pd_idx] & PTE_ALLOCATED)) {
+            console_printf("[page_fault] NULL page: allocating private PT\n");
+            u32 old_pt_phys = entry_get_phys(pd->entries[null_pd_idx]);
+            page_table_t *old_pt = ptable_ptr(old_pt_phys);
+
+            u32 new_pt_phys = frame_alloc();
+            if (!new_pt_phys) {
+                console_printf("[page_fault] NULL page: frame_alloc failed!\n");
+                goto unhandled;
+            }
+
+            page_table_t *new_pt = ptable_ptr(new_pt_phys);
+            memcpy(new_pt, old_pt, sizeof(page_table_t));
+
+            /* Allow user read/write access to NULL page (physical page 0).
+             * Don't set PTE_ALLOCATED — physical page 0 is not ours to free. */
+            new_pt->entries[0] = entry_create(0, PTE_PRESENT | PTE_USER | PTE_RW);
+
+            pd->entries[null_pd_idx] = entry_create(new_pt_phys,
+                PTE_PRESENT | PTE_RW | PTE_ALLOCATED | PTE_USER);
+
+            /* Full TLB flush — PDE[0] changed completely */
+            console_printf("[page_fault] NULL page mapped (private PT, kernel mappings preserved)\n");
+            paging_flush_tlb();
+            return;
+        }
+
+        /* PDE[0] already has a private PT — ensure PTE[0] has user access.
+         * This path handles the case where the eager mapping at PD creation
+         * failed (OOM) or for PDs created before the fix was applied. */
+        u32 pt_phys = entry_get_phys(pd->entries[null_pd_idx]);
+        page_table_t *pt = ptable_ptr(pt_phys);
+        if (!(pt->entries[0] & PTE_USER)) {
+            pt->entries[0] = entry_create(0, PTE_PRESENT | PTE_USER | PTE_RW);
+            paging_invalidate_tlb(virt_addr);
+            console_printf("[page_fault] NULL page: PTE[0] upgraded to user\n");
+        }
+        return;
+    }
+
+unhandled:
     /* Handle demand-zero paging */
     if (!present && user && virt_addr < KERNEL_VIRTUAL_BASE) {
         /* Check if this is a demand-zero page */
@@ -661,13 +817,55 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
     }
     
     /* Log the fault and kill the process */
-    console_printf("[page_fault] %s at %x by %s (%s%s%s%s)\n",
+    console_printf("[page_fault] %s at %x by %s (%s%s%s)\n",
                    present ? "protection violation" : "page not present",
                    virt_addr,
                    user ? "user" : "kernel",
                    rw ? "write " : "read ",
                    reserved ? "reserved-bit " : "",
                    fetch ? "fetch " : "");
+
+    /* Dump PDE/PTE for debugging */
+    {
+        page_directory_t *dbg_pd = page_directory_get_current();
+        u32 dbg_pd_idx = virt_to_pd_index(virt_addr);
+        u32 dbg_pt_idx = virt_to_pt_index(virt_addr);
+        console_printf("[page_fault] PD=%p idx=%u PDE=%x (phys=%x flags=%x)\n",
+                       (void*)dbg_pd, dbg_pd_idx,
+                       dbg_pd ? dbg_pd->entries[dbg_pd_idx] : 0,
+                       dbg_pd ? entry_get_phys(dbg_pd->entries[dbg_pd_idx]) : 0,
+                       dbg_pd ? entry_get_flags(dbg_pd->entries[dbg_pd_idx]) : 0);
+        if (dbg_pd && (dbg_pd->entries[dbg_pd_idx] & PTE_PRESENT)) {
+            u32 dbg_pt_phys = entry_get_phys(dbg_pd->entries[dbg_pd_idx]);
+            page_table_t *dbg_pt = ptable_ptr(dbg_pt_phys);
+            console_printf("[page_fault] PT phys=%x PTE[%u]=%x (phys=%x flags=%x)\n",
+                           dbg_pt_phys, dbg_pt_idx,
+                           dbg_pt->entries[dbg_pt_idx],
+                           entry_get_phys(dbg_pt->entries[dbg_pt_idx]),
+                           entry_get_flags(dbg_pt->entries[dbg_pt_idx]));
+        }
+
+        /* Dump instruction bytes at faulting EIP */
+        if (regs) {
+            u8 dbg_instr[16];
+            u32 dbg_eip = regs->eip;
+            for (int ii = 0; ii < 16; ii++) {
+                if (page_is_present(NULL, dbg_eip + ii)) {
+                    dbg_instr[ii] = *(volatile u8 *)(uintptr_t)(dbg_eip + ii);
+                } else {
+                    dbg_instr[ii] = 0;
+                }
+            }
+            console_printf("[page_fault] instr at %x:", dbg_eip);
+            for (int ii = 0; ii < 16; ii++) {
+                console_printf(" %02x", dbg_instr[ii]);
+            }
+            console_printf("\n");
+            console_printf("[page_fault] user_eax=%x ecx=%x edx=%x ebx=%x esi=%x edi=%x ebp=%x\n",
+                           regs->eax, regs->ecx, regs->edx, regs->ebx,
+                           regs->esi, regs->edi, regs->ebp);
+        }
+    }
     
     if (user && task_is_active()) {
         task_abort_from_trap(regs, "page fault");
@@ -679,6 +877,22 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
 /*
  * Initialization
  */
+
+static u32 multiboot_modules_end(const multiboot_info_t *mbi) {
+    u32 mods_end = 0;
+
+    if (!mbi || !(mbi->flags & MULTIBOOT_FLAG_MODS) || mbi->mods_count == 0) {
+        return mods_end;
+    }
+
+    const multiboot_module_t *mods = (const multiboot_module_t *)(uintptr_t)mbi->mods_addr;
+    for (u32 i = 0; i < mbi->mods_count; ++i) {
+        if (mods[i].mod_end > mods_end) {
+            mods_end = mods[i].mod_end;
+        }
+    }
+    return mods_end;
+}
 
 /* Parse multiboot memory map to find best region for user frames */
 static bool find_best_memory_region(const multiboot_info_t *mbi, 
@@ -754,68 +968,87 @@ static bool find_best_memory_region(const multiboot_info_t *mbi,
 void paging_init(const multiboot_info_t *mbi, u32 total_memory_bytes, u32 kernel_end_phys) {
     console_write("[paging] initializing...\n");
     
-    /* Find best memory region for user frames */
+    /* 
+     * Kick off the paging nightmare.
+     * We're about to slice up memory and hope the hardware actually honors 
+     * our mappings. Spoiler: it often doesn't on real hardware.
+     */
     u32 user_mem_start, user_mem_end;
     find_best_memory_region(mbi, &user_mem_start, &user_mem_end, kernel_end_phys);
 
-    /* Ensure frame allocator does not overlap with kernel heap.
-     * The kernel heap (kmalloc) manages physical memory from kernel_end
-     * up to heap_end via identity mapping.  The frame allocator must
-     * start after the kernel heap to avoid double-allocating the same
-     * physical frames (which corrupts page directories, ELF buffers, etc.). */
+    /* 
+     * Don't touch the initrd module. 
+     * If we start allocating user frames from the initrd, we'll overwrite 
+     * the system binaries before we even run them. That would be suboptimal.
+     */
+    {
+        u32 mods_end = multiboot_modules_end(mbi);
+        if (mods_end > 0) {
+            u32 after_mods = (mods_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+            if (user_mem_start < after_mods) {
+                user_mem_start = after_mods;
+            }
+        }
+    }
+
+    /* 
+     * Shield the kernel heap. 
+     * The frame allocator is greedy and will gobble up everything it sees. 
+     * We have to force it to start after the kernel heap so we don't 
+     * double-allocate physical frames. Double-allocation leads to silent 
+     * data corruption and long nights of debugging.
+     */
     {
         u32 heap_end = memory_heap_end();
         if (heap_end > 0 && user_mem_start < heap_end) {
             user_mem_start = (heap_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
             if (user_mem_start >= user_mem_end) {
-                panic("Frame allocator region exhausted by kernel heap");
+                panic("Frame allocator region exhausted by kernel heap. Buy more RAM.");
             }
         }
     }
 
-    /* Initialize frame allocator with actual available memory */
-    u32 first_frame = user_mem_start / PAGE_SIZE;
-    
-    console_printf("[paging] using memory region %x - %x (%u MiB)\n",
-                   user_mem_start, user_mem_end, 
-                   (user_mem_end - user_mem_start) / (1024 * 1024));
-    
-    if (!frame_alloc_init(user_mem_start, user_mem_end, first_frame)) {
+    /* 
+     * Initialize the physical frame allocator.
+     */
+    if (!frame_alloc_init(user_mem_start, user_mem_end, 0)) {
         panic("Failed to initialize frame allocator");
     }
-    
-    /* Allocate kernel page directory */
-    kernel_page_directory = kmalloc_aligned(sizeof(page_directory_t), PAGE_SIZE);
-    if (!kernel_page_directory) {
-        panic("Failed to allocate kernel page directory");
-    }
-    memset(kernel_page_directory, 0, sizeof(page_directory_t));
-    
-    /* Identity map first 4MB (boot + kernel code + initial heap) */
-    for (u32 addr = 0; addr < 0x400000; addr += PAGE_SIZE) {
-        page_map(kernel_page_directory, addr, addr, PTE_PRESENT | PTE_RW | PTE_GLOBAL);
+
+    /* 
+     * Create the kernel page directory using physical addresses directly,
+     * since paging isn't enabled yet (KERNEL_VIRTUAL_BASE won't work).
+     */
+    u32 pd_phys = frame_alloc();
+    if (!pd_phys) panic("Failed to allocate kernel page directory");
+    page_directory_t *pd = (page_directory_t *)(uintptr_t)pd_phys;
+    memset(pd, 0, sizeof(page_directory_t));
+
+    /* Set up identity + higher-half mapping for the lower 896MB (0 .. 0x38000000).
+     * Each page table covers 4MB. The same page table is shared between the
+     * identity PDE (i) and the higher-half PDE (KERNEL_PD_INDEX + i) so that
+     * both virtual 0 and virtual 3GB map to the same physical pages.
+     */
+    u32 num_4mb = 0x38000000 / 0x400000;
+    for (u32 pde = 0; pde < num_4mb; pde++) {
+        u32 pt_phys = frame_alloc();
+        if (!pt_phys) panic("Failed to allocate page table");
+        page_table_t *pt = (page_table_t *)(uintptr_t)pt_phys;
+        memset(pt, 0, sizeof(page_table_t));
+
+        u32 phys_base = pde * 0x400000;
+        for (u32 pte = 0; pte < 1024; pte++) {
+            pt->entries[pte] = (phys_base + pte * PAGE_SIZE) |
+                               PTE_PRESENT | PTE_RW | PTE_GLOBAL;
+        }
+
+        pd->entries[pde] = pt_phys | PTE_PRESENT | PTE_RW;
+        pd->entries[KERNEL_PD_INDEX + pde] = pt_phys | PTE_PRESENT | PTE_RW;
     }
 
-    /* Identity map 4–16 MB gap so the kernel heap (which may span this range)
-     * remains accessible after paging is enabled. */
-    for (u32 addr = 0x400000; addr < 0x01000000; addr += PAGE_SIZE) {
-        page_map(kernel_page_directory, addr, addr, PTE_PRESENT | PTE_RW | PTE_GLOBAL);
-    }
-    
-    /* Map kernel heap region */
-    for (u32 addr = 0x01000000; addr < 0x10000000; addr += PAGE_SIZE) {
-        page_map(kernel_page_directory, addr, addr, PTE_PRESENT | PTE_RW | PTE_GLOBAL);
-    }
-    
-    /* Set up higher-half mapping at 3GB */
-    /* Map kernel virtual 0xC0000000 -> physical 0x00000000 (first 1GB) */
-    for (u32 i = 0; i < 0x40000000; i += PAGE_SIZE) {
-        page_map(kernel_page_directory, KERNEL_VIRTUAL_BASE + i, i, 
-                 PTE_PRESENT | PTE_RW | PTE_GLOBAL);
-    }
-    
-    /* Identity-map the framebuffer (if present) before enabling paging,
-     * so console writes via libtsm don't page fault. */
+    /* 
+     * Identity-map the framebuffer so console writes don't page-fault.
+     */
     if (mbi->flags & MULTIBOOT_FLAG_FRAMEBUFFER) {
         u64 fb_phys = mbi->framebuffer_addr;
         if (fb_phys != 0 && (fb_phys >> 32) == 0) {
@@ -824,30 +1057,39 @@ void paging_init(const multiboot_info_t *mbi, u32 total_memory_bytes, u32 kernel
             if (fb_size > 0) {
                 fb_size = (fb_size + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
                 for (u32 offset = 0; offset < fb_size; offset += PAGE_SIZE) {
-                    page_map_existing(kernel_page_directory,
-                                      fb_phys32 + offset, fb_phys32 + offset,
-                                      PTE_PRESENT | PTE_RW);
+                    u32 phys = fb_phys32 + offset;
+                    u32 pde_idx = phys >> 22;
+                    u32 pte_idx = (phys >> 12) & 0x3FF;
+
+                    if (!(pd->entries[pde_idx] & PTE_PRESENT)) {
+                        u32 fb_pt_phys = frame_alloc();
+                        if (!fb_pt_phys) panic("Failed to allocate FB page table");
+                        page_table_t *fb_pt = (page_table_t *)(uintptr_t)fb_pt_phys;
+                        memset(fb_pt, 0, sizeof(page_table_t));
+                        pd->entries[pde_idx] = fb_pt_phys | PTE_PRESENT | PTE_RW;
+                    }
+
+                    page_table_t *pt = (page_table_t *)(uintptr_t)(pd->entries[pde_idx] & 0xFFFFF000);
+                    pt->entries[pte_idx] = phys | PTE_PRESENT | PTE_RW;
                 }
-                paging_flush_tlb();
             }
         }
     }
 
-    /* Switch to kernel page directory */
-    kernel_page_directory_phys = (u32)(uintptr_t)kernel_page_directory;
-    paging_set_cr3(kernel_page_directory_phys);
+    /* Store kernel page directory and enable paging */
+    kernel_page_directory = pd;
+    kernel_page_directory_phys = pd_phys;
+    paging_set_cr3(pd_phys);
+    paging_enable();
+    paging_active = true;
     
     console_printf("[paging] kernel page directory at %x (phys %x)\n",
                    (u32)kernel_page_directory, kernel_page_directory_phys);
-    console_printf("[paging] PDE[0]=%x PDE[1]=%x PDE[2]=%x PDE[3]=%x PDE[4]=%x\n",
-                   kernel_page_directory->entries[0],
-                   kernel_page_directory->entries[1],
-                   kernel_page_directory->entries[2],
-                   kernel_page_directory->entries[3],
-                   kernel_page_directory->entries[4]);
-    console_printf("[paging] enabling paging...\n");
-    paging_enable();
-    paging_active = true;
+    console_printf("[paging] PDEs 0-15:");
+    for (int i = 0; i < 16; i++) {
+        console_printf(" %x", kernel_page_directory->entries[i]);
+    }
+    console_write("\n");
     console_printf("[paging] ready - %u frames total, %u free\n", 
                    frame_total(), frame_free_count());
 }

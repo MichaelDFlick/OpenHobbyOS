@@ -24,6 +24,8 @@ static u32 file_count;
 static u32 module_size;
 static initrd_file_t *files;
 
+#include "paging.h"
+
 void initrd_init(const multiboot_info_t *mbi) {
     const initrd_header_t *header;
     const initrd_entry_t *entries;
@@ -40,7 +42,11 @@ void initrd_init(const multiboot_info_t *mbi) {
     }
 
     mods = (const multiboot_module_t *)(uintptr_t)mbi->mods_addr;
-    base = (const u8 *)(uintptr_t)mods[0].mod_start;
+    /* Use higher-half virtual mapping for initrd access. The kernel maps 
+     * physical [0, 1GB) to virtual [3GB, 4GB) during paging_init. Accessing 
+     * via higher-half avoids faults in user page directories which lack 
+     * identity mappings for the 32-80MB range. */
+    base = (const u8 *)(uintptr_t)(KERNEL_VIRTUAL_BASE + mods[0].mod_start);
     module_size = mods[0].mod_end - mods[0].mod_start;
     console_printf("[initrd] base=%x module_size=%u\n", (u32)(uintptr_t)base, module_size);
     for (u32 _i = 0; _i < mods[0].mod_end - mods[0].mod_start && _i < 64; _i++) {

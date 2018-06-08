@@ -5,7 +5,7 @@
 #include "types.h"
 
 #define PIPE_MAX_OBJECTS 64
-#define PIPE_BUFFER_SIZE 65536
+#define PIPE_BUFFER_SIZE 8192
 
 typedef struct pipe_endpoint pipe_endpoint_t;
 
@@ -13,6 +13,8 @@ struct pipe_endpoint {
     bool used;
     int id;
     int refcount;
+    int read_refcount;
+    int write_refcount;
     bool read_open;
     bool write_open;
     bool peer_closed;

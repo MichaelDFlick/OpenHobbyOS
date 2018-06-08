@@ -1,6 +1,7 @@
 #include "memory.h"
 
 #include "console.h"
+#include "paging.h"
 #include "panic.h"
 #include "string.h"
 #include "task.h"
@@ -144,8 +145,32 @@ void memory_init(const multiboot_info_t *mbi, uintptr_t kernel_end) {
     u32 heap2_start = align_up(mods_end, 16);
     u32 heap2_end = highest_addr;
 
-    if (heap2_end > USER_BASE - 0x10000u) {
-        heap2_end = USER_BASE - 0x10000u;
+    /* Physical addresses are identity-mapped up to 896MB (paging_init).
+     * The kernel heap can live anywhere in this range without conflicting
+     * with user space — user page directories skip PDEs in the user VA
+     * band and allocate their own page tables there. */
+
+    /* Keep a guard page between the pre-module heap and the initrd module.
+     * libtsm/console allocations were landing on the module boundary and
+     * scribbling over the archive header during console_activate(). */
+    if (heap1_end > heap1_start + PAGE_SIZE + sizeof(block_header_t)) {
+        heap1_end -= PAGE_SIZE;
+    }
+
+    /* Post-module memory: give the kernel heap a small fixed cap (4 MiB)
+     * and leave the rest for the physical frame pool.  The kernel heap
+     * rarely needs more than ~256 KiB after init; the frame pool needs
+     * every remaining page for user processes and page tables. */
+    if (heap2_end > heap2_start) {
+        u32 available = heap2_end - heap2_start;
+        u32 heap_max = 4u * 1024u * 1024u;
+        if (available > heap_max + sizeof(block_header_t)) {
+            heap2_end = heap2_start + heap_max;
+        } else if (available > sizeof(block_header_t)) {
+            heap2_end = heap2_start + available / 4u;
+        } else {
+            heap2_end = heap2_start;
+        }
     }
 
     /* Initialize first heap region (before modules) if it has space */

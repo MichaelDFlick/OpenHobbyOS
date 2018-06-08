@@ -80,12 +80,14 @@ static pipe_endpoint_t *pipe_alloc(void) {
     for (int i = 0; i < PIPE_MAX_OBJECTS; ++i) {
         if (!pipe_endpoints[i].used) {
             pipe_endpoint_t *pipe = &pipe_endpoints[i];
-            memset(pipe, 0, sizeof(*pipe));
-            pipe->used = true;
-            pipe->id = pipe_next_id();
-            pipe->refcount = 1;
-            pipe->read_open = true;
-            pipe->write_open = true;
+    memset(pipe, 0, sizeof(*pipe));
+    pipe->used = true;
+    pipe->id = pipe_next_id();
+    pipe->refcount = 1;
+    pipe->read_refcount = 0;
+    pipe->write_refcount = 0;
+    pipe->read_open = true;
+    pipe->write_open = true;
             pipe->peer_closed = false;
             pipe->read_waiter = -1;
             pipe->waiting_for_read = false;
@@ -169,6 +171,13 @@ int pipe_close_read(pipe_endpoint_t *pipe) {
     if (!pipe || !pipe->used) {
         return -EBADF;
     }
+    if (pipe->read_refcount <= 0) {
+        return -EBADF;
+    }
+    pipe->read_refcount--;
+    if (pipe->read_refcount > 0) {
+        return 0;
+    }
     if (!pipe->read_open) {
         return -EBADF;
     }
@@ -185,6 +194,13 @@ int pipe_close_read(pipe_endpoint_t *pipe) {
 int pipe_close_write(pipe_endpoint_t *pipe) {
     if (!pipe || !pipe->used) {
         return -EBADF;
+    }
+    if (pipe->write_refcount <= 0) {
+        return -EBADF;
+    }
+    pipe->write_refcount--;
+    if (pipe->write_refcount > 0) {
+        return 0;
     }
     if (!pipe->write_open) {
         return -EBADF;
