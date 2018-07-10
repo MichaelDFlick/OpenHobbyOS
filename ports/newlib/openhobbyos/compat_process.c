@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <spawn.h>
+#include <sys/prctl.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -244,4 +245,15 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
 int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *file_actions,
                  const posix_spawnattr_t *attrp, char *const argv[], char *const envp[]) {
     return posix_spawn(pid, file, file_actions, attrp, argv, envp);
+}
+
+int prctl(int option, ...) {
+    switch (option) {
+    case PR_SET_NAME:
+    case PR_GET_NAME:
+        return 0;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
 }

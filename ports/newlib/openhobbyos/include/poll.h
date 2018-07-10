@@ -2,6 +2,9 @@
 #define OPENHOBBYOS_POLL_H
 
 #include <sys/types.h>
+#include <sys/cdefs.h>
+
+__BEGIN_DECLS
 
 typedef unsigned int nfds_t;
 
@@ -19,5 +22,7 @@ struct pollfd {
 };
 
 int poll(struct pollfd *fds, nfds_t count, int timeout);
+
+__END_DECLS
 
 #endif

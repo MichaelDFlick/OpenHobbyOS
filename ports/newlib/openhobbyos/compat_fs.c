@@ -281,6 +281,36 @@ int chmod(const char *path, mode_t mode) {
     return oh_check_result(oh_chmod_raw(path, (unsigned int)mode));
 }
 
+int mkdirat(int dirfd, const char *path, mode_t mode) {
+    char full_path[PATH_MAX];
+    char dir_path[PATH_MAX];
+
+    if (path == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (path[0] == '/' || dirfd == AT_FDCWD) {
+        return mkdir(path, mode);
+    }
+    if (oh_validate_fd(dirfd) != 0) {
+        return -1;
+    }
+    if (readlinkat(dirfd, ".", dir_path, sizeof(dir_path) - 1) >= 0) {
+        size_t dlen = strlen(dir_path);
+        size_t plen = strlen(path);
+        if (dlen + 1 + plen >= sizeof(full_path)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(full_path, dir_path, dlen);
+        full_path[dlen] = '/';
+        memcpy(full_path + dlen + 1, path, plen + 1);
+        return mkdir(full_path, mode);
+    }
+    errno = ENOSYS;
+    return -1;
+}
+
 int fchmod(int fd, mode_t mode) {
     struct stat st;
 

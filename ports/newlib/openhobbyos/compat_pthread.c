@@ -99,6 +99,18 @@ int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset) {
     return sigprocmask(how, set, oldset);
 }
 
+int pthread_setcancelstate(int state, int *oldstate) {
+    (void)state;
+    if (oldstate) *oldstate = PTHREAD_CANCEL_ENABLE;
+    return 0;
+}
+
+int pthread_setcanceltype(int type, int *oldtype) {
+    (void)type;
+    if (oldtype) *oldtype = PTHREAD_CANCEL_DEFERRED;
+    return 0;
+}
+
 pthread_t pthread_self(void) {
     return oh_pthread_current_id;
 }
@@ -439,4 +451,133 @@ void pthread_exit(void *value_ptr) {
     }
 
     _exit(0);
+}
+
+/* Scheduling */
+int sched_get_priority_max(int policy)
+{
+    (void)policy;
+    return 99;
+}
+
+int sched_get_priority_min(int policy)
+{
+    (void)policy;
+    return 1;
+}
+
+int sched_yield(void)
+{
+    return 0;
+}
+
+int pthread_attr_setinheritsched(pthread_attr_t *attr, int inherit)
+{
+    if (attr == NULL) return EINVAL;
+    attr->inheritsched = inherit;
+    return 0;
+}
+
+int pthread_attr_getschedpolicy(const pthread_attr_t *attr, int *policy)
+{
+    (void)attr;
+    if (policy) *policy = SCHED_OTHER;
+    return 0;
+}
+
+int pthread_attr_setschedpolicy(pthread_attr_t *attr, int policy)
+{
+    (void)attr;
+    (void)policy;
+    return 0;
+}
+
+int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stacksize)
+{
+    if (attr == NULL) return EINVAL;
+    attr->stacksize = stacksize;
+    return 0;
+}
+
+int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *stacksize)
+{
+    if (attr == NULL) return EINVAL;
+    if (stackaddr) *stackaddr = NULL;
+    if (stacksize) *stacksize = attr->stacksize;
+    return 0;
+}
+
+int pthread_attr_setschedparam(pthread_attr_t *attr, const struct sched_param *param)
+{
+    (void)attr;
+    (void)param;
+    return 0;
+}
+
+int pthread_getschedparam(pthread_t thread, int *policy, struct sched_param *param)
+{
+    (void)thread;
+    if (policy) *policy = SCHED_OTHER;
+    if (param) param->sched_priority = 0;
+    return 0;
+}
+
+int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param)
+{
+    (void)thread;
+    (void)policy;
+    (void)param;
+    return 0;
+}
+
+int pthread_cancel(pthread_t thread)
+{
+    (void)thread;
+    return 0;
+}
+
+void pthread_testcancel(void)
+{
+}
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void*))
+{
+    static int next_key = 0;
+    (void)destructor;
+    if (key == NULL) return EINVAL;
+    *key = next_key++;
+    return 0;
+}
+
+int pthread_key_delete(pthread_key_t key)
+{
+    (void)key;
+    return 0;
+}
+
+int pthread_setspecific(pthread_key_t key, const void *value)
+{
+    (void)key;
+    (void)value;
+    return 0;
+}
+
+void *pthread_getspecific(pthread_key_t key)
+{
+    (void)key;
+    return NULL;
+}
+
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id)
+{
+    (void)attr;
+    (void)clock_id;
+    return 0;
+}
+
+int pthread_cond_clockwait(pthread_cond_t *cond, pthread_mutex_t *mutex, clockid_t clock_id, const struct timespec *abstime)
+{
+    (void)clock_id;
+    (void)abstime;
+    return pthread_cond_wait(cond, mutex);
 }

@@ -84,6 +84,7 @@ int fchmod(int fd, mode_t mode);
 int fstat(int fd, struct stat *sbuf);
 int fstatat(int dirfd, const char *path, struct stat *sbuf, int flags);
 int mkdir(const char *path, mode_t mode);
+int mkdirat(int dirfd, const char *path, mode_t mode);
 int mkfifo(const char *path, mode_t mode);
 int stat(const char *path, struct stat *sbuf);
 int lstat(const char *path, struct stat *sbuf);

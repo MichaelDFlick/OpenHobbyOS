@@ -145,7 +145,7 @@ static void oh_copy_stat(struct stat *out, const struct linux_stat64 *in) {
     out->st_blocks = (blkcnt_t)in->st_blocks;
 }
 
-void _exit(int status) {
+__attribute__((weak)) void _exit(int status) {
     oh_syscall1(LINUX_SYS_EXIT_GROUP, status);
     for (;;) {
         __asm__ volatile ("hlt");
@@ -263,7 +263,7 @@ int isatty(int fd) {
     return 1;
 }
 
-void *sbrk(ptrdiff_t increment) {
+__attribute__((weak)) void *_sbrk(ptrdiff_t increment) {
     static char *heap_end;
     char *previous;
     char *next;
@@ -284,6 +284,8 @@ void *sbrk(ptrdiff_t increment) {
     heap_end = next;
     return previous;
 }
+
+__attribute__((weak, alias("_sbrk"))) void *sbrk(ptrdiff_t increment);
 
 int access(const char *path, int mode) {
     return oh_set_errno_result(oh_syscall2(LINUX_SYS_ACCESS, (int) path, mode));

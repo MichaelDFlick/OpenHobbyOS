@@ -2,7 +2,12 @@
 #define OPENHOBBYOS_SYS_SENDFILE_H
 
 #include <sys/types.h>
+#include <sys/cdefs.h>
+
+__BEGIN_DECLS
 
 ssize_t sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
+
+__END_DECLS
 
 #endif

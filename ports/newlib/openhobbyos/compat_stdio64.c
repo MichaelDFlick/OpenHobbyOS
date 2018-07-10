@@ -28,6 +28,21 @@ _fpos64_t __sseek64(struct _reent *reent, void *cookie, _fpos64_t offset, int wh
     return (_fpos64_t) result;
 }
 
+_off64_t fseeko64(FILE *stream, _off64_t offset, int whence)
+{
+    return fseeko(stream, offset, whence);
+}
+
+_off64_t ftello64(FILE *stream)
+{
+    return ftello(stream);
+}
+
+FILE *fopen64(const char *pathname, const char *mode)
+{
+    return fopen(pathname, mode);
+}
+
 _READ_WRITE_RETURN_TYPE __swrite64(struct _reent *reent, void *cookie, const char *buffer, _READ_WRITE_BUFSIZE_TYPE length) {
     FILE *fp = (FILE *) cookie;
     ssize_t written;

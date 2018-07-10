@@ -86,7 +86,15 @@ struct sigaction {
 #define SI_ASYNCIO -4
 #define SI_MESGQ   -3
 
+#define CLD_EXITED    1
+#define CLD_KILLED    2
+#define CLD_DUMPED    3
+#define CLD_TRAPPED   4
+#define CLD_STOPPED   5
+#define CLD_CONTINUED 6
+
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 int kill(pid_t pid, int sig);
 int sigaction(int signo, const struct sigaction *act, struct sigaction *oldact);
 int sigaddset(sigset_t *set, int signo);
@@ -97,7 +105,7 @@ int sigemptyset(sigset_t *set);
 int sigpending(sigset_t *set);
 int sigsuspend(const sigset_t *set);
 int sigwait(const sigset_t *set, int *sig);
-int sigaltstack(const stack_t *restrict ss, stack_t *restrict old_ss);
+int sigaltstack(const stack_t *__restrict ss, stack_t *__restrict old_ss);
 int sigwaitinfo(const sigset_t *set, siginfo_t *info);
 int sigtimedwait(const sigset_t *set, siginfo_t *info, const struct timespec *timeout);
 int sigqueue(pid_t pid, int signo, const union sigval value);

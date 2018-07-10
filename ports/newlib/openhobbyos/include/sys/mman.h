@@ -27,6 +27,7 @@ extern "C" {
 #endif
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+void *mmap64(void *addr, size_t length, int prot, int flags, int fd, long long offset);
 int munmap(void *addr, size_t length);
 int mprotect(void *addr, size_t length, int prot);
 int msync(void *addr, size_t length, int flags);

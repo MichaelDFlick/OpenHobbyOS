@@ -2,6 +2,9 @@
 #define OPENHOBBYOS_SYS_IOCTL_H
 
 #include <stdarg.h>
+#include <sys/cdefs.h>
+
+__BEGIN_DECLS
 
 #define _IOC_NRBITS    8U
 #define _IOC_TYPEBITS  8U
@@ -52,5 +55,7 @@ struct winsize {
 #define SIOCETHTOOL   0x8946
 
 int ioctl(int fd, unsigned long request, ...);
+
+__END_DECLS
 
 #endif
