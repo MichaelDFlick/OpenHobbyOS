@@ -59,7 +59,6 @@ compile_object() {
 
 build_compositor() {
     compile_object "$ROOT/user/xnx/compositor.c" "$BUILD_DIR/obj/compositor.o"
-    compile_object "$ROOT/user/xnx/strtod_stub.c" "$BUILD_DIR/obj/strtod_stub.o"
     "$CC" \
         --sysroot="$SYSROOT" \
         -static \
@@ -67,7 +66,6 @@ build_compositor() {
         -nostartfiles \
         -o "$BUILD_DIR/bin/xnx-compositor" \
         "$BUILD_DIR/obj/compositor.o" \
-        "$BUILD_DIR/obj/strtod_stub.o" \
         -Wl,--start-group \
         "${PIXMAN_LIBS[@]}" \
         -llodepng \

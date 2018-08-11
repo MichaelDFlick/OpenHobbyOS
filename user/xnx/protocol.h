@@ -14,19 +14,24 @@
 #define XNX_BUF_H 768
 
 enum xnx_message_type {
-    XNX_CREATE_SURFACE  = 0x0001,
-    XNX_DESTROY_SURFACE = 0x0002,
-    XNX_SET_TITLE       = 0x0003,
-    XNX_SET_GEOMETRY    = 0x0004,
-    XNX_WRITE_BUFFER    = 0x0005,
-    XNX_COMMIT          = 0x0006,
-    XNX_GET_DISPLAY_INFO = 0x0007,
-    XNX_SURFACE_CREATED = 0x8001,
-    XNX_KEY_EVENT       = 0x8002,
-    XNX_POINTER_EVENT   = 0x8003,
-    XNX_CLOSE_REQUEST   = 0x8004,
-    XNX_FRAME_DONE      = 0x8005,
-    XNX_DISPLAY_INFO    = 0x8006,
+    XNX_CREATE_SURFACE    = 0x0001,
+    XNX_DESTROY_SURFACE   = 0x0002,
+    XNX_SET_TITLE         = 0x0003,
+    XNX_SET_GEOMETRY      = 0x0004,
+    XNX_WRITE_BUFFER      = 0x0005,
+    XNX_COMMIT            = 0x0006,
+    XNX_GET_DISPLAY_INFO  = 0x0007,
+    XNX_SET_CURSOR        = 0x0008,
+    XNX_LIST_SURFACES     = 0x0009,
+    XNX_RAISE_SURFACE     = 0x000A,
+    XNX_SHOW_CURSOR       = 0x000B,
+    XNX_SURFACE_CREATED   = 0x8001,
+    XNX_KEY_EVENT         = 0x8002,
+    XNX_POINTER_EVENT     = 0x8003,
+    XNX_CLOSE_REQUEST     = 0x8004,
+    XNX_FRAME_DONE        = 0x8005,
+    XNX_DISPLAY_INFO      = 0x8006,
+    XNX_SURFACE_LIST      = 0x8007,
 };
 
 struct xnx_header {
@@ -68,10 +73,43 @@ struct xnx_commit {
     uint32_t surface_id;
 };
 
+struct xnx_set_cursor {
+    int32_t x;
+    int32_t y;
+    uint8_t cursor_type;
+};
+
 struct xnx_key_event {
     uint32_t surface_id;
     uint32_t keycode;
     uint8_t pressed;
+};
+
+struct xnx_pointer_event {
+    uint32_t surface_id;
+    int32_t x;
+    int32_t y;
+    uint8_t buttons;
+    int8_t dx;
+    int8_t dy;
+};
+
+struct xnx_surface_info {
+    uint32_t surface_id;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t z_order;
+    char title[64];
+};
+
+struct xnx_surface_list {
+    uint32_t count;
+};
+
+struct xnx_show_cursor {
+    uint8_t visible;
 };
 
 struct xnx_fb_bitfield {

@@ -161,6 +161,7 @@ static int xnx_dequeue_event(xnx_conn_t *c, struct xnx_event *event) {
 static int xnx_handle_async_message(xnx_conn_t *c, const struct xnx_header *hdr) {
     struct xnx_event event;
     struct xnx_key_event *key;
+    struct xnx_pointer_event *ptr;
 
     if (!c || !hdr) {
         errno = EINVAL;
@@ -178,6 +179,23 @@ static int xnx_handle_async_message(xnx_conn_t *c, const struct xnx_header *hdr)
         event.data.key.surface_id = key->surface_id;
         event.data.key.keycode = key->keycode;
         event.data.key.pressed = key->pressed;
+        return xnx_queue_event(c, &event);
+    }
+
+    if (hdr->type == XNX_POINTER_EVENT) {
+        if (hdr->payload_size != sizeof(struct xnx_pointer_event)) {
+            errno = EPROTO;
+            return -1;
+        }
+        ptr = (struct xnx_pointer_event *)c->read_buf;
+        memset(&event, 0, sizeof(event));
+        event.type = XNX_EVENT_POINTER;
+        event.data.pointer.surface_id = ptr->surface_id;
+        event.data.pointer.x = ptr->x;
+        event.data.pointer.y = ptr->y;
+        event.data.pointer.buttons = ptr->buttons;
+        event.data.pointer.dx = ptr->dx;
+        event.data.pointer.dy = ptr->dy;
         return xnx_queue_event(c, &event);
     }
 
@@ -445,6 +463,45 @@ int xnx_poll_event(xnx_conn_t *c, struct xnx_event *out_event) {
     }
 
     return xnx_dequeue_event(c, out_event);
+}
+
+int xnx_set_cursor(xnx_conn_t *c, int32_t x, int32_t y, uint8_t cursor_type) {
+    struct xnx_set_cursor sc;
+    sc.x = x;
+    sc.y = y;
+    sc.cursor_type = cursor_type;
+    return xnx_send_message(c, XNX_SET_CURSOR, &sc, sizeof(sc));
+}
+
+int xnx_list_surfaces(xnx_conn_t *c, struct xnx_surface_info *surfaces, uint32_t *count) {
+    struct xnx_header hdr;
+    struct xnx_surface_list sl;
+
+    if (xnx_send_message(c, XNX_LIST_SURFACES, NULL, 0) < 0) return -1;
+    if (xnx_recv_all(c, &hdr, sizeof(hdr)) < 0) return -1;
+    if (hdr.type != XNX_SURFACE_LIST) { errno = EPROTO; return -1; }
+    if (hdr.payload_size < sizeof(sl)) { errno = EPROTO; return -1; }
+    if (xnx_recv_all(c, &sl, sizeof(sl)) < 0) return -1;
+
+    if (surfaces && *count >= sl.count) {
+        size_t info_size = (size_t)sl.count * sizeof(struct xnx_surface_info);
+        if (xnx_recv_all(c, surfaces, info_size) < 0) return -1;
+    } else if (surfaces) {
+        *count = sl.count;
+        return 0;
+    }
+    *count = sl.count;
+    return 0;
+}
+
+int xnx_raise_surface(xnx_conn_t *c, uint32_t surface_id) {
+    return xnx_send_message(c, XNX_RAISE_SURFACE, &surface_id, sizeof(surface_id));
+}
+
+int xnx_show_cursor(xnx_conn_t *c, int visible) {
+    struct xnx_show_cursor sc;
+    sc.visible = visible ? 1 : 0;
+    return xnx_send_message(c, XNX_SHOW_CURSOR, &sc, sizeof(sc));
 }
 
 int xnx_dispatch(xnx_conn_t *c) {
