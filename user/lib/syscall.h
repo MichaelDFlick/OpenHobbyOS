@@ -4,6 +4,10 @@
 #include "abi/linux.h"
 #include "thread.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int sys_exit(int status);
 int sys_exit_group(int status);
 int sys_read(int fd, void *buffer, unsigned int length);
@@ -61,5 +65,9 @@ int sys_suspend(void);
 int sys_memstat(unsigned int buffer[5]);
 int sys_ticks(void);
 int sys_tickfreq(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
