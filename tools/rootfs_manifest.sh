@@ -28,6 +28,7 @@ ohos_rootfs_append_entries() {
     _out+=("$ROOT/build/user/toolbox.elf::/bin/env")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/id")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/echo")
+    _out+=("$ROOT/build/user/sh.elf::/bin/sh")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/sleep")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/mkdir")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/clear")
@@ -37,12 +38,34 @@ ohos_rootfs_append_entries() {
     _out+=("$ROOT/build/user/toolbox.elf::/bin/reboot")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/suspend")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/help")
-    _out+=("$ROOT/build/user/gosh.elf::/bin/gosh")
-    _out+=("$ROOT/build/user/gosh.elf::/bin/shell")
-    _out+=("$ROOT/build/user/gosh.elf::/bin/sh")
+    if [[ -f "$ROOT/build/ports/sysroot/bin/gdm" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/gdm::/bin/gdm")
+    fi
+    if [[ -f "$ROOT/build/ports/sysroot/bin/gosh" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/gosh::/bin/gosh")
+    fi
     _out+=("$ROOT/build/user/test_fb.elf::/bin/test_fb")
     _out+=("$ROOT/build/user/net_test.elf::/bin/net_test")
     _out+=("$ROOT/build/user/net_info.elf::/bin/net_info")
+
+    if [[ -f "$ROOT/build/user/ohpkg_read.elf" ]]; then
+        _out+=("$ROOT/build/user/ohpkg_read.elf::/bin/ohpkg-read")
+    fi
+    if [[ -f "$ROOT/build/user/ohpkg_run.elf" ]]; then
+        _out+=("$ROOT/build/user/ohpkg_run.elf::/bin/ohpkg-run")
+    fi
+
+    # .ohpkg application packages
+    local ohpkg_dir="$ROOT/build/ohpkg"
+    if [[ -d "$ohpkg_dir" ]]; then
+        for f in "$ohpkg_dir"/*.ohpkg; do
+            if [[ -f "$f" ]]; then
+                local name
+                name=$(basename "$f")
+                _out+=("$f::/bin/$name")
+            fi
+        done
+    fi
 
     if [[ -f "$ROOT/build/ports/fastfetch/install/usr/bin/fastfetch" ]]; then
         _out+=("$ROOT/build/ports/fastfetch/install/usr/bin/fastfetch::/bin/fastfetch")
@@ -67,6 +90,14 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/xnx/install/bin/xnx-demo::/bin/xnx-demo")
     fi
 
+    if [[ -f "$ROOT/build/ports/sysroot/bin/installer" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/installer::/bin/installer")
+    fi
+
+    if [[ -f "$ROOT/build/ports/sysroot/bin/terminal" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/terminal::/bin/terminal")
+    fi
+
     if [[ -f "$ROOT/build/ports/ohplay/install/bin/ohplay" ]]; then
         _out+=("$ROOT/build/ports/ohplay/install/bin/ohplay::/bin/ohplay")
         _out+=("$ROOT/build/ports/ohplay/install/bin/ohplay::/bin/play")
@@ -76,15 +107,40 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/doom::/bin/doom")
     fi
 
+    if [[ -f "$ROOT/assets/fonts/Monospace/Monospace.ttf" ]]; then
+        _out+=("$ROOT/assets/fonts/Monospace/Monospace.ttf::/fonts/Monospace.ttf")
+    fi
+
     if [[ -f "$ROOT/assets/Doom1.WAD" ]]; then
         _out+=("$ROOT/assets/Doom1.WAD::/doom1.wad")
+        _out+=("$ROOT/assets/Doom1.WAD::/DOOM1.WAD")
+        _out+=("$ROOT/assets/Doom1.WAD::/bin/doom1.wad")
+        _out+=("$ROOT/assets/Doom1.WAD::/root/doom1.wad")
     fi
 
     if [[ -f "$ROOT/build/ports/sysroot/bin/gears" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/gears::/bin/gears")
     fi
 
+    if [[ -d "$ROOT/build/ports/sysroot/plugins/platforms" ]]; then
+        for plugin in "$ROOT/build/ports/sysroot/plugins/platforms/"*.so; do
+            if [[ -f "$plugin" ]]; then
+                local plugin_name
+                plugin_name=$(basename "$plugin")
+                _out+=("$plugin::/usr/plugins/platforms/$plugin_name")
+            fi
+        done
+    fi
+
     if [[ -f "$ROOT/build/ports/sysroot/bin/test_write" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/test_write::/bin/test_write")
+    fi
+
+    if [[ -f "$ROOT/build/ports/sysroot/bin/qt_demo" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/qt_demo::/bin/qt_demo")
+    fi
+
+    if [[ -f "$ROOT/build/ports/sysroot/lib/ld-openhobbyos.so.1" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/lib/ld-openhobbyos.so.1::/usr/lib/ld-openhobbyos.so.1")
     fi
 }
