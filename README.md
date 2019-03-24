@@ -1,8 +1,8 @@
 # OpenHobbyOS (OHOS)
 
-![screenshot2](assets/OH_rotating.gif)
+![screenshot2](assets/ohm.png)
 
-This is my hobby OS. I started writing it one day and I couldn't stop. A 32-bit x86 monolithic kernel, written in C with the hot paths in NASM, booting on real hardware (tested on both BIOS and UEFI), running Doom.
+This is my hobby OS. I started writing it one day and I couldn't stop. A 32-bit x86 monolithic kernel with paging that actually works (mostly), written in C with the hot paths in NASM, booting on real hardware (tested on both BIOS and UEFI), running Doom and occasionally crashing in novel ways.
 
 ![screenshot2](screenshots/OH2.png)
 ![screenshot1](screenshots/OH1.png)
@@ -13,7 +13,7 @@ I don't know why I built half of this. I just kept thinking, "that'd be cool," a
 
 ## What the fuck is this
 
-It's a from-scratch 32-bit operating system. Preemptive multitasking, syscalls, VFS with initrd + ext2 + devfs, a framebuffer console with proper VT100 emulation, networking via lwIP, ACPI power management, and a custom compositor called XNX.
+It's a from-scratch 32-bit operating system. Preemptive multitasking, syscalls, VFS with initrd + ext2 + devfs, a framebuffer console with proper VT100 emulation, networking via lwIP, ACPI power management, a custom compositor called XNX, and a login manager called GDM that may or may not crash depending on how the heap feels today.
 
 It does not have:
 
@@ -33,24 +33,21 @@ First publicly reproducible repo: 2025.
 
 * **Preemptive multitasking** with a round-robin scheduler. It works. I have no idea how, so don't ask me.
 * **80+ syscall numbers** via `int 0x80`, Linux ABI-compatible. If you know Linux syscalls, you already know how to write userspace for this thing.
-* **Per-process page directories** with copy-on-write fork. The paging infrastructure is fully wired. I just haven't enabled it on the CPU yet. It's a debug thing. I'll flip the bit eventually.
+* **Per-process page directories** with copy-on-write fork. The paging infrastructure is fully wired **and enabled**. I finally flipped the bit. It only took me two years of saying "I'll get around to it."
 * **VFS stack**: initrd (custom cpio-like), ext2 (read + write), devfs. I corrupted a disk image once. It was educational.
 * **libtsm framebuffer console** with full VT100 emulation. ANSI colors, scrollback, the whole package. It goes to both the framebuffer and serial, so you can watch from two angles.
 * **XNX display protocol**: Unix domain socket + pixman compositing. Clients create surfaces, the compositor composites them, and pixels hit the hardware framebuffer every 33ms. Yes, there's a fullscreen gradient demo. It's art.
 * **lwIP TCP/IP** talking to real hardware through an RTL8139 NIC driver. I can ping things. Sometimes they ping back.
 * **ACPI power management** via uACPI. Shutdown, reboot, suspend. I control the power grid now.
-* **newlib C library** cross-compiled for `i686-openhobbyos-elf`. Your userspace speaks C.
-* **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib.
+* **newlib C library** cross-compiled for `i686-openhobbyos-elf`. Your userspace speaks C, badly.
+* **GDM login manager** — a TUI login screen written with nuklear. It asks for a username and password. It doesn't validate them. It's a vibe.
+* **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib, GDM, ohplay (an audio player), and Qt6.
 
 ---
 
 ## Requirements
 
-| Thing    | Need                                                                             |
-| -------- | -------------------------------------------------------------------------------- |
-| **CPU**  | i386 / IA-32. Pentium or later. Yes, it'll boot on that ThinkPad in your closet. |
-| **RAM**  | 200–500 MB                                                                       |
-| **Disk** | CD-ROM or IDE disk image                                                         |
+IA-32/1386 and above CPU's should do. almost all modern 64 bits cpus have built in ability to switch to 32 bit mode.
 
 ---
 
@@ -68,8 +65,12 @@ Optional for ports: `meson, ninja, pkg-config, autoconf, automake, cmake`
 
 ## Quick start
 
+Full installation and build documentation: [`INSTALL.rst`](INSTALL.rst).
+Read it. It's funny and it explains the mouse driver and the Qt6 stack and why
+you should never trust me with a linker script.
+
 ```bash
-# Build the whole thing
+# Build the whole thing (this will take a while, go touch grass)
 make all
 
 # Run in QEMU
@@ -78,7 +79,7 @@ make run
 # Run with serial debug output
 make run-debug
 
-# Clean
+# Clean (admire your wasted afternoon)
 make clean
 ```
 
@@ -94,9 +95,12 @@ You will find the ISO in the `build` folder.
 0x00100000 - kernel_end:   Kernel code + data (identity mapped, I live here)
 kernel_end - 0x02FF0000:   Kernel heap (kmalloc territory)
 0x03000000+:               User ELF loading (48MB+ available)
+0x20000000+:               User mmap space (for shared libs, mappings, etc.)
+0x36100000:                User TLS (thread-local storage, per-process)
 ```
 
-Paging is **fully initialized** but **not enabled on the CPU**. Why? Debugging. Turn it on and it works fine. I just haven't bothered to flip the bit on every boot because I'm lazy.
+Paging is **enabled** on the CPU. Has been for a while now. The page fault handler
+gets regular exercise — mostly from my userspace bugs, which is progress.
 
 ---
 
@@ -105,9 +109,9 @@ Paging is **fully initialized** but **not enabled on the CPU**. Why? Debugging. 
 Linux ABI-compatible via `int 0x80`. I stole the numbers so you don't have to learn another ABI:
 
 * File I/O: open, read, write, close, lseek, ioctl, mmap, brk
-* Process: fork, execve, wait, exit, getpid
+* Process: fork, execve, wait, exit, getpid, spawn
 * IPC: pipe, Unix sockets
-* Time: clock_gettime, nanosleep
+* Time: clock_gettime, nanosleep, gettimeofday
 * OHOS-specific: spawn, yield at 400+
 
 ---
@@ -119,25 +123,23 @@ VFS → initrd (read-only, boot) | ext2 (read/write, disk) | devfs (/dev/*)
 Block layer: VFS → blkdev → ATA → Disk
 ```
 
-**initrd** is a custom cpio-like archive embedded in the kernel. It holds every binary the system needs to boot to a shell.
+**initrd** is a custom cpio-like archive embedded in the kernel. It holds every binary the system needs to boot to a shell (or to GDM, if you're feeling graphical).
 
 **ext2** does full read and write. I handle inodes, block groups, and directory entries. I've also produced some beautifully corrupted disk images. It's a rite of passage. You haven't lived until you've debugged an ext2 write at 3 AM with a hex editor.
 
-**devfs** gives you `/dev/fb0`, `/dev/null`, `/dev/zero`, and a console device. The classics.
+**devfs** gives you `/dev/fb0`, `/dev/null`, `/dev/zero`, `/dev/mouse`, `/dev/tty`, and a console device. The classics, plus a rodent.
 
 ---
 
 ## Graphics
 
-```txt
-Early boot:      VGA text mode (80x25, retro chic)
-Framebuffer:     libtsm with VT100 emulation
-XNX compositor:  Custom display protocol over Unix domain sockets
-```
+I AM going to explain every weird name that you probably might have not heard of before so you can understand my mental model:
 
 **libtsm** is a terminal emulator linked directly into the kernel. VT100 escape sequences, ANSI colors, scrollback buffer, the works. Output hits both the framebuffer and serial simultaneously.
 
 **XNX** is the display protocol I wrote. Clients connect to `/tmp/xnx.sock`, create surfaces, and push pixel buffers. The compositor composites everything with pixman and flushes it to the hardware framebuffer. It's basically a baby Wayland, but worse, and I'm proud of it.
+
+**GDM** is a TUI login manager built with nuklear. It draws a login prompt on the framebuffer, reads keyboard input, and attempts to launch a session. It crashes sometimes. That's not a bug, it's a feature. It keeps you on your toes.
 
 ---
 
@@ -166,6 +168,21 @@ Thanks to the other depressed veterans who suffered through this so lazy people 
 * FFmpeg: the multimedia library I will never use
 * TinyGL: OpenGL in a shoebox
 * gears: spinning for the sake of spinning
+* nuklear: immediate-mode GUI without the bloat
+* Qt6: for making my build scripts 10x longer
+
+---
+## Thanks to :
+
+ all respective owners of each open source free software used in this project. 
+
+ Thanks to Mark Sordestom for their great effort on the art work
+
+ Thanks to all people who are willing/and to/or help/helped this project by contributing
+
+
+(*this system in the end is open source and used 100% free and open sourced software. at its core its opinionated from linux and any other OS through its unique design. but being opinionated does not mean software does not deserve a respective thanks.*)
+
 
 ---
 
@@ -173,4 +190,4 @@ Thanks to the other depressed veterans who suffered through this so lazy people 
 
 BSD 3-Clause. Go wild. See `LICENSE`. Don't sue me if it fucks up your PC. It probably won't.
 
-Probably.
+
