@@ -1,3 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec ar "$@"
+# Filter out -Wl flags that CMake incorrectly passes to the archiver
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        -Wl,*|--sysroot=*) ;;  # skip linker flags
+        *) args+=("$arg") ;;
+    esac
+done
+exec ar "${args[@]}"

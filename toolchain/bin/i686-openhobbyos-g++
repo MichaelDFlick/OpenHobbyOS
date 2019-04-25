@@ -7,7 +7,7 @@ SYSROOT=${OPENHOBBYOS_SYSROOT:-"$ROOT/build/ports/sysroot"}
 TARGET_SYSROOT="$SYSROOT/i686-elf"
 SPECS="$SYSROOT/lib/openhobbyos.specs"
 
-args=(-m32 -ffreestanding -fno-pic -fno-pie -fomit-frame-pointer -D__OPENHOBBYOS__ -D_GLIBCXX_HOSTED=0)
+args=(-m32 -fno-pic -fno-pie -fomit-frame-pointer -D__OPENHOBBYOS__ -D_GLIBCXX_HOSTED=0)
 
 if [[ -d "$SYSROOT" ]]; then
     args+=(--sysroot="$SYSROOT")
@@ -15,6 +15,19 @@ fi
 
 if [[ -f "$SPECS" ]]; then
     args+=(-specs="$SPECS")
+fi
+
+# C++ headers must come BEFORE C headers so that #include_next works
+# e.g. <cmath> uses #include_next <math.h> and skips directories before it
+CXX_VER=13
+if [[ -d "$SYSROOT/include/c++/$CXX_VER" ]]; then
+    args+=(-isystem "$SYSROOT/include/c++/$CXX_VER")
+fi
+if [[ -d "$SYSROOT/include/i386-linux-gnu/c++/$CXX_VER" ]]; then
+    args+=(-isystem "$SYSROOT/include/i386-linux-gnu/c++/$CXX_VER")
+fi
+if [[ -d "$SYSROOT/include/i386-linux-gnu/c++/$CXX_VER/bits" ]]; then
+    args+=(-isystem "$SYSROOT/include/i386-linux-gnu/c++/$CXX_VER/bits")
 fi
 
 if [[ -d "$TARGET_SYSROOT/include" ]]; then
@@ -29,4 +42,4 @@ if [[ -d "$TARGET_SYSROOT/lib" ]]; then
     args+=(-L"$TARGET_SYSROOT/lib" -B"$TARGET_SYSROOT/lib")
 fi
 
-exec gcc "${args[@]}" "$@"
+exec g++ "${args[@]}" "$@"
