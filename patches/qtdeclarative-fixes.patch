@@ -1,0 +1,51 @@
+diff --git a/src/3rdparty/masm/wtf/OSAllocatorPosix.cpp b/src/3rdparty/masm/wtf/OSAllocatorPosix.cpp
+index 02d3bf70..c3ddd38e 100644
+--- a/src/3rdparty/masm/wtf/OSAllocatorPosix.cpp
++++ b/src/3rdparty/masm/wtf/OSAllocatorPosix.cpp
+@@ -42,6 +42,18 @@
+ #ifndef MFD_CLOEXEC
+ #define MFD_CLOEXEC         0x0001U
+ #endif
++#ifndef MAP_NORESERVE
++#define MAP_NORESERVE       0x4000
++#endif
++#ifndef MADV_WILLNEED
++#define MADV_WILLNEED       3
++#endif
++#ifndef MADV_DONTNEED
++#define MADV_DONTNEED       4
++#endif
++#if !defined(madvise) && !defined(HAVE_MADVISE)
++static inline int madvise(void *addr, size_t length, int advice) { (void)addr; (void)length; (void)advice; return 0; }
++#endif
+ #endif
+ 
+ #if defined(__ANDROID__) && defined(SYS_memfd_create)
+diff --git a/src/qml/memory/qv4stacklimits.cpp b/src/qml/memory/qv4stacklimits.cpp
+index 4f3c2193..664eebdf 100644
+--- a/src/qml/memory/qv4stacklimits.cpp
++++ b/src/qml/memory/qv4stacklimits.cpp
+@@ -225,6 +225,14 @@ StackProperties stackProperties()
+ 
+ #else
+ 
++#if defined(__OPENHOBBYOS__)
++static int openhobbyos_pthread_getattr_np(pthread_t thread, pthread_attr_t *attr)
++{
++    pthread_attr_init(attr);
++    return 0;
++}
++#endif
++
+ StackProperties stackPropertiesGeneric(qsizetype stackSize = 0)
+ {
+     // If stackSize is given, do not trust the stack size returned by pthread_attr_getstack
+@@ -234,6 +242,8 @@ StackProperties stackPropertiesGeneric(qsizetype stackSize = 0)
+ #  if defined(PTHREAD_NP_H) || defined(_PTHREAD_NP_H_) || defined(Q_OS_NETBSD)
+     pthread_attr_init(&sattr);
+     pthread_attr_get_np(thread, &sattr);
++#  elif defined(__OPENHOBBYOS__)
++    openhobbyos_pthread_getattr_np(thread, &sattr);
+ #  else
+     pthread_getattr_np(thread, &sattr);
+ #  endif

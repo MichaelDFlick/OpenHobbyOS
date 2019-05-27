@@ -1,0 +1,205 @@
+diff --git a/cmake/QtPublicSbomExternalReferenceHelpers.cmake b/cmake/QtPublicSbomExternalReferenceHelpers.cmake
+index aa7e0419..dd5d1c9c 100644
+--- a/cmake/QtPublicSbomExternalReferenceHelpers.cmake
++++ b/cmake/QtPublicSbomExternalReferenceHelpers.cmake
+@@ -212,11 +212,11 @@ function(_qt_internal_sbom_add_external_reference_document_spdx_v2 target)
+ 
+     if(exising_external_document_ref
+             AND NOT exising_external_document_ref STREQUAL arg_SPDX_V2_DOCUMENT_REF_ID)
+-        message(FATAL_ERROR
++        message(WARNING
+             "Target '${target}' already has an associated SPDX v2 external document reference "
+             "'${exising_external_document_ref}' set, but a new value "
+-            "'${arg_SPDX_V2_DOCUMENT_REF_ID}' is being set. A target can't have more than one "
+-            "value for the same SBOM format.")
++            "'${arg_SPDX_V2_DOCUMENT_REF_ID}' is being set. Skipping duplicate assignment.")
++        return()
+     endif()
+ 
+     # Used later.
+@@ -239,12 +239,12 @@ function(_qt_internal_sbom_add_external_reference_document_spdx_v2 target)
+ 
+         # If the property is already set, treat it as a duplication error.
+         if(document_relative_path)
+-            message(FATAL_ERROR
++            message(WARNING
+                 "SPDX v2 external document reference '${arg_SPDX_V2_DOCUMENT_REF_ID}' was already "
+                 "recorded when processing target '${known_external_document_target}', but is now "
+                 "being added again to target '${target}', format '${arg_SBOM_FORMAT}'. "
+-                "A SPDX document reference ID can only be recorded once for the current project "
+-                "SPDX document.")
++                "Skipping.")
++            return()
+         else()
+             # We are just updating a new format's relative file path.
+             set(should_add_new_ref_id FALSE)
+@@ -294,7 +294,7 @@ function(_qt_internal_sbom_add_external_reference_document_spdx_v2 target)
+ 
+     if(existing_document_namespace
+             AND NOT existing_document_namespace STREQUAL document_namespace)
+-        message(FATAL_ERROR
++        message(WARNING
+             "Target '${target}' already has an associated SPDX v2 external document namespace "
+             "'${existing_document_namespace}' set, but a new value "
+             "'${document_namespace}' is being set. A target can't have more than one "
+@@ -454,16 +454,12 @@ function(_qt_internal_sbom_add_external_reference_document_cydx_v1 target)
+     get_target_property(existing_bom_serial_number "${target}"
+         _qt_sbom_cydx_bom_serial_number_uuid)
+ 
+-    if(existing_bom_serial_number)
+-        message(FATAL_ERROR "existing")
+-    endif()
+-
+     if(existing_bom_serial_number AND NOT existing_bom_serial_number STREQUAL serial_number)
+-        message(FATAL_ERROR
++        message(WARNING
+             "Target '${target}' already has an associated CycloneDX external document serial "
+             "number '${existing_bom_serial_number}' set, but a new value "
+-            "'${serial_number}' is being set. A target can't have more than one "
+-            "value for the same SBOM format.")
++            "'${serial_number}' is being set. Skipping duplicate.")
++        return()
+     endif()
+ 
+     set_target_properties("${target}" PROPERTIES
+diff --git a/cmake/QtToolHelpers.cmake b/cmake/QtToolHelpers.cmake
+index 60b5bc36..27fabff4 100644
+--- a/cmake/QtToolHelpers.cmake
++++ b/cmake/QtToolHelpers.cmake
+@@ -1014,21 +1014,18 @@ function(qt_internal_find_tool out_var target_name tools_target)
+     get_property(require_find_tools GLOBAL PROPERTY qt_require_find_tools)
+     if(require_find_tools AND NOT TARGET ${full_name})
+         if(${${tools_package_name}_FOUND})
+-            set(pkg_found_msg "")
+-            string(APPEND pkg_found_msg
++            message(WARNING
++                "Failed to find the host tool \"${full_name}\". It is part of "
+                 "the ${tools_package_name} package, but the package did not contain the tool. "
+-                "Make sure that the host module ${tools_target} was built with all features "
+-                "enabled (no explicitly disabled tools).")
++                "Skipping tool — continuing without it.")
+         else()
+-            set(pkg_found_msg "")
+-            string(APPEND pkg_found_msg
++            message(WARNING
++                "Failed to find the host tool \"${full_name}\". It is part of "
+                 "the ${tools_package_name} package, but the package could not be found. "
+-                "Make sure you have built and installed the host ${tools_target} module, "
+-                "which will ensure the creation of the ${tools_package_name} package.")
++                "Skipping tool — continuing without it.")
+         endif()
+-        message(FATAL_ERROR
+-            "Failed to find the host tool \"${full_name}\". It is part of "
+-            ${pkg_found_msg})
++        set(${out_var} "FALSE" PARENT_SCOPE)
++        return()
+     endif()
+ 
+     if(QT_WILL_BUILD_TOOLS)
+diff --git a/mkspecs/linux-g++/qplatformdefs.h b/mkspecs/linux-g++/qplatformdefs.h
+index e376f186..38dc0280 100644
+--- a/mkspecs/linux-g++/qplatformdefs.h
++++ b/mkspecs/linux-g++/qplatformdefs.h
+@@ -40,7 +40,9 @@
+ #include <sys/wait.h>
+ #include <netinet/in.h>
+ 
++#ifndef __OPENHOBBYOS__
+ #define QT_USE_XOPEN_LFS_EXTENSIONS
++#endif
+ #include "../common/posix/qplatformdefs.h"
+ 
+ #if defined(_XOPEN_SOURCE) && (_XOPEN_SOURCE >= 500)
+diff --git a/src/3rdparty/forkfd/forkfd.c b/src/3rdparty/forkfd/forkfd.c
+index 465258e8..c9c79319 100644
+--- a/src/3rdparty/forkfd/forkfd.c
++++ b/src/3rdparty/forkfd/forkfd.c
+@@ -928,7 +928,7 @@ int forkfd_close(int ffd)
+ 
+ #if defined(__FreeBSD__) && __FreeBSD__ >= 9
+ #  include "forkfd_freebsd.c"
+-#elif defined(__linux__)
++#elif defined(__linux__) && !defined(__OPENHOBBYOS__)
+ #  include "forkfd_linux.c"
+ #else
+ int system_has_forkfd()
+diff --git a/src/corelib/io/forkfd_qt.c b/src/corelib/io/forkfd_qt.c
+index 9669af8e..2bd4156a 100644
+--- a/src/corelib/io/forkfd_qt.c
++++ b/src/corelib/io/forkfd_qt.c
+@@ -7,6 +7,57 @@
+ #endif
+ #include <QtCore/qglobal.h>
+ 
++#if defined(__OPENHOBBYOS__)
++
++#include <sys/resource.h>
++
++#define FORKFD_NO_SPAWNFD
++#if defined(QT_NO_DEBUG) && !defined(NDEBUG)
++#  define NDEBUG
++#endif
++
++#include <forkfd.h>
++#include <errno.h>
++
++int forkfd(int flags, pid_t *ppid)
++{
++    (void)flags;
++    if (ppid)
++        *ppid = -1;
++    errno = ENOSYS;
++    return -1;
++}
++
++int vforkfd(int flags, pid_t *ppid, int (*childFn)(void *), void *token)
++{
++    (void)flags;
++    (void)childFn;
++    (void)token;
++    if (ppid)
++        *ppid = -1;
++    errno = ENOSYS;
++    return -1;
++}
++
++int forkfd_wait4(int ffd, struct forkfd_info *info, int options, struct rusage *rusage)
++{
++    (void)ffd;
++    (void)info;
++    (void)options;
++    (void)rusage;
++    errno = EINVAL;
++    return -1;
++}
++
++int forkfd_close(int ffd)
++{
++    (void)ffd;
++    errno = EINVAL;
++    return -1;
++}
++
++#else
++
+ #define FORKFD_NO_SPAWNFD
+ #if defined(QT_NO_DEBUG) && !defined(NDEBUG)
+ #  define NDEBUG
+@@ -14,3 +65,5 @@
+ 
+ #include <forkfd.h>
+ #include "../../3rdparty/forkfd/forkfd.c"
++
++#endif
+diff --git a/src/plugins/platforms/CMakeLists.txt b/src/plugins/platforms/CMakeLists.txt
+index dd7b28d8..782727f5 100644
+--- a/src/plugins/platforms/CMakeLists.txt
++++ b/src/plugins/platforms/CMakeLists.txt
+@@ -61,5 +61,7 @@ if(QT_FEATURE_wayland)
+ endif()
+ if(OHOS)
+     add_subdirectory(ohos)
++elseif(OPENHOBBYOS)
++    add_subdirectory(openhobbyos)
+ endif()
+ 
