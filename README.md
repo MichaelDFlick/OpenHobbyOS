@@ -181,7 +181,7 @@ Thanks to the other depressed veterans who suffered through this so lazy people 
  Thanks to all people who are willing/and to/or help/helped this project by contributing
 
 
-(*this system in the end is open source and used 100% free and open sourced software. at its core its opinionated from linux and any other OS through its unique design. but being opinionated does not mean software does not deserve a respective thanks.*)
+(*this system in the end is open source and used 100% free and open sourced software. at its core its completly opinionated away from linux and any other OS through its unique design. but being opinionated does not mean software does not deserve a respective thanks.*)
 
 
 ---
