@@ -1,53 +1,36 @@
 # OpenHobbyOS (OHOS)
 
-![screenshot2](assets/ohm.png)
+![screenshot](assets/ohm.png)
 
-This is my hobby OS. I started writing it one day and I couldn't stop. A 32-bit x86 monolithic kernel with paging that actually works (mostly), written in C with the hot paths in NASM, booting on real hardware (tested on both BIOS and UEFI), running Doom and occasionally crashing in novel ways.
+OpenHobbyOS is a 32-bit x86 hobby operating system built from scratch. It features a monolithic kernel with paging, preemptive multitasking, a POSIX-like syscall interface, a VFS stack with initrd/ext2/devfs, a custom compositor (XNX), and a growing ecosystem of ported software including Qt6, Doom, FFmpeg, and more.
 
 ![screenshot2](screenshots/OH2.png)
 ![screenshot1](screenshots/OH1.png)
 
-I don't know why I built half of this. I just kept thinking, "that'd be cool," and then I'd wake up at midnight and start writing an ext2 driver like my life depends on it.
-
 ---
-
-## What the fuck is this
-
-It's a from-scratch 32-bit operating system. Preemptive multitasking, syscalls, VFS with initrd + ext2 + devfs, a framebuffer console with proper VT100 emulation, networking via lwIP, ACPI power management, a custom compositor called XNX, and a login manager called GDM that may or may not crash depending on how the heap feels today.
-
-It does not have:
-
-* A network stack I wrote myself (I'm not insane, I ported lwIP)
-* USB (I value my remaining sanity)
-* Any good reason to exist
-
----
-
-## The Beginning of It All
-
-OHOS started originally as a kernel project I made back in 2013 called ElexerKernel. ElexerKernel was one of the first operating systems I ever worked on. I decided to continue the project, add a human-interactable userspace on top, and add Linux ABI + syscall compatibility, which eventually turned into the current project: OHOS.
-
-First publicly reproducible repo: 2025.
 
 ## Features
 
-* **Preemptive multitasking** with a round-robin scheduler. It works. I have no idea how, so don't ask me.
-* **80+ syscall numbers** via `int 0x80`, Linux ABI-compatible. If you know Linux syscalls, you already know how to write userspace for this thing.
-* **Per-process page directories** with copy-on-write fork. The paging infrastructure is fully wired **and enabled**. I finally flipped the bit. It only took me two years of saying "I'll get around to it."
-* **VFS stack**: initrd (custom cpio-like), ext2 (read + write), devfs. I corrupted a disk image once. It was educational.
-* **libtsm framebuffer console** with full VT100 emulation. ANSI colors, scrollback, the whole package. It goes to both the framebuffer and serial, so you can watch from two angles.
-* **XNX display protocol**: Unix domain socket + pixman compositing. Clients create surfaces, the compositor composites them, and pixels hit the hardware framebuffer every 33ms. Yes, there's a fullscreen gradient demo. It's art.
-* **lwIP TCP/IP** talking to real hardware through an RTL8139 NIC driver. I can ping things. Sometimes they ping back.
-* **ACPI power management** via uACPI. Shutdown, reboot, suspend. I control the power grid now.
-* **newlib C library** cross-compiled for `i686-openhobbyos-elf`. Your userspace speaks C, badly.
-* **GDM login manager** — a TUI login screen written with nuklear. It asks for a username and password. It doesn't validate them. It's a vibe.
-* **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib, GDM, ohplay (an audio player), and Qt6.
+- **Preemptive multitasking** with a round-robin scheduler
+- **80+ syscall numbers** via `int 0x80`, Linux ABI-compatible
+- **Per-process page directories** with copy-on-write fork and fully enabled paging
+- **VFS stack**: initrd (custom cpio-like), ext2 (read/write), devfs
+- **libtsm framebuffer console** with full VT100 emulation, ANSI colors, scrollback; output to both framebuffer and serial
+- **XNX display protocol**: Unix domain socket + pixman compositing with per-surface z-order, mouse cursor rendering, and 33ms frame timing
+- **lwIP TCP/IP** stack with RTL8139 NIC driver
+- **ACPI power management** via uACPI (shutdown, reboot, suspend)
+- **newlib C library** cross-compiled for `i686-openhobbyos-elf`
+- **GDM login manager**: TUI login screen using nuklear
+- **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib, GDM, ohplay (audio player), Qt6 with QPA plugin
 
 ---
 
 ## Requirements
 
-IA-32/1386 and above CPU's should do. almost all modern 64 bits cpus have built in ability to switch to 32 bit mode.
+- IA-32 / i386 CPU or later (all modern x86-64 CPUs support 32-bit mode)
+- 200-500 MB RAM
+- VGA-compatible framebuffer
+- CD-ROM or USB boot support
 
 ---
 
@@ -65,12 +48,10 @@ Optional for ports: `meson, ninja, pkg-config, autoconf, automake, cmake`
 
 ## Quick start
 
-Full installation and build documentation: [`INSTALL.rst`](INSTALL.rst).
-Read it. It's funny and it explains the mouse driver and the Qt6 stack and why
-you should never trust me with a linker script.
+Full build and installation documentation: [`INSTALL.rst`](INSTALL.rst).
 
 ```bash
-# Build the whole thing (this will take a while, go touch grass)
+# Build everything (kernel, ports, initrd, ISO)
 make all
 
 # Run in QEMU
@@ -79,115 +60,94 @@ make run
 # Run with serial debug output
 make run-debug
 
-# Clean (admire your wasted afternoon)
+# Clean build artifacts
 make clean
 ```
 
-You will find the ISO in the `build` folder.
+The bootable ISO is produced at `build/ohos.iso`.
 
 ---
 
-## Memory layout
+## Architecture
+
+### Memory layout
 
 ```txt
-0x00000000 - 0x0009FFFF: Low memory (reserved, stay out)
-0x000A0000 - 0x000FFFFF: VGA/ROM (also reserved)
-0x00100000 - kernel_end:   Kernel code + data (identity mapped, I live here)
-kernel_end - 0x02FF0000:   Kernel heap (kmalloc territory)
+0x00000000 - 0x0009FFFF: Low memory (reserved)
+0x000A0000 - 0x000FFFFF: VGA/ROM (reserved)
+0x00100000 - kernel_end:   Kernel code + data (identity mapped)
+kernel_end - 0x02FF0000:   Kernel heap
 0x03000000+:               User ELF loading (48MB+ available)
-0x20000000+:               User mmap space (for shared libs, mappings, etc.)
+0x20000000+:               User mmap space (shared libs, mappings)
 0x36100000:                User TLS (thread-local storage, per-process)
 ```
 
-Paging is **enabled** on the CPU. Has been for a while now. The page fault handler
-gets regular exercise — mostly from my userspace bugs, which is progress.
+Paging is enabled on the CPU with per-process page directories.
 
----
+### Syscall interface
 
-## Syscall interface
+Linux ABI-compatible via `int 0x80`:
 
-Linux ABI-compatible via `int 0x80`. I stole the numbers so you don't have to learn another ABI:
+- **File I/O**: open, read, write, close, lseek, ioctl, mmap, brk
+- **Process**: fork, execve, wait, exit, getpid, spawn
+- **IPC**: pipe, Unix domain sockets
+- **Time**: clock_gettime, nanosleep, gettimeofday
+- **OHOS-specific**: spawn, yield (syscall numbers 400+)
 
-* File I/O: open, read, write, close, lseek, ioctl, mmap, brk
-* Process: fork, execve, wait, exit, getpid, spawn
-* IPC: pipe, Unix sockets
-* Time: clock_gettime, nanosleep, gettimeofday
-* OHOS-specific: spawn, yield at 400+
-
----
-
-## Filesystem stack
+### Filesystem stack
 
 ```txt
 VFS → initrd (read-only, boot) | ext2 (read/write, disk) | devfs (/dev/*)
 Block layer: VFS → blkdev → ATA → Disk
 ```
 
-**initrd** is a custom cpio-like archive embedded in the kernel. It holds every binary the system needs to boot to a shell (or to GDM, if you're feeling graphical).
+- **initrd**: custom cpio-like archive embedded in the kernel containing all boot-time binaries
+- **ext2**: full read/write support with inode, block group, and directory entry handling
+- **devfs**: provides `/dev/fb0`, `/dev/null`, `/dev/zero`, `/dev/mouse`, `/dev/tty`, and console
 
-**ext2** does full read and write. I handle inodes, block groups, and directory entries. I've also produced some beautifully corrupted disk images. It's a rite of passage. You haven't lived until you've debugged an ext2 write at 3 AM with a hex editor.
+### Graphics
 
-**devfs** gives you `/dev/fb0`, `/dev/null`, `/dev/zero`, `/dev/mouse`, `/dev/tty`, and a console device. The classics, plus a rodent.
+- **libtsm**: terminal emulator linked into the kernel providing VT100 escape sequence handling, ANSI colors, and scrollback
+- **XNX**: custom display protocol over Unix domain sockets. Clients create surfaces and push pixel buffers; the compositor renders with pixman and flushes to the hardware framebuffer at 33ms intervals
+- **GDM**: TUI login manager using nuklear, draws directly to `/dev/fb0`
 
----
-
-## Graphics
-
-I AM going to explain every weird name that you probably might have not heard of before so you can understand my mental model:
-
-**libtsm** is a terminal emulator linked directly into the kernel. VT100 escape sequences, ANSI colors, scrollback buffer, the works. Output hits both the framebuffer and serial simultaneously.
-
-**XNX** is the display protocol I wrote. Clients connect to `/tmp/xnx.sock`, create surfaces, and push pixel buffers. The compositor composites everything with pixman and flushes it to the hardware framebuffer. It's basically a baby Wayland, but worse, and I'm proud of it.
-
-**GDM** is a TUI login manager built with nuklear. It draws a login prompt on the framebuffer, reads keyboard input, and attempts to launch a session. It crashes sometimes. That's not a bug, it's a feature. It keeps you on your toes.
-
----
-
-## Network
+### Network
 
 ```txt
-lwIP → netdev → RTL8139 PCI NIC → the internet (probably)
+lwIP → netdev → RTL8139 PCI NIC
 ```
 
-lwIP is ported as a userspace library. The RTL8139 driver does PCI enumeration + MMIO. The whole pipeline works. I can ping things. It feels like magic because it basically is.
+lwIP is ported as a userspace library. The RTL8139 driver performs PCI enumeration and MMIO-based I/O.
 
 ---
 
-## Credits
+## Project history
 
-Thanks to the other depressed veterans who suffered through this so lazy people like me can use it. Credit where it's due:
-
-* uACPI: power management
-* lwIP: TLS and networking, duh
-* lodepng: loading PNG files without multithreading everything, cuh
-* zlib: file compression
-* pixman: drawing pixels and rendering
-* doomgeneric: for making Doom even run
-* libtsm: for being an actually correct state machine for VT100
-* fastfetch: for making things look more ric-ey
-* FFmpeg: the multimedia library I will never use
-* TinyGL: OpenGL in a shoebox
-* gears: spinning for the sake of spinning
-* nuklear: immediate-mode GUI without the bloat
-* Qt6: for making my build scripts 10x longer
+OHOS originated from ElexerKernel, a kernel project started in 2013. The project was revived and expanded with a userspace, Linux ABI compatibility, and the current port ecosystem. The first publicly reproducible repository was published in 2025.
 
 ---
-## Thanks to :
 
- all respective owners of each open source free software used in this project. 
+## Acknowledgments
 
- Thanks to Mark Sordestom for their great effort on the art work
+This project builds on the work of many open-source projects:
 
- Thanks to all people who are willing/and to/or help/helped this project by contributing
+- uACPI — power management
+- lwIP — TCP/IP networking stack
+- lodepng — PNG image loading
+- zlib — compression
+- pixman — pixel compositing
+- doomgeneric — Doom port
+- libtsm — VT100 terminal emulation
+- fastfetch — system information
+- FFmpeg — multimedia processing
+- TinyGL — OpenGL subset implementation
+- nuklear — immediate-mode GUI library
+- Qt6 — cross-platform application framework
 
-
-(*this system in the end is open source and used 100% free and open sourced software. at its core its completly opinionated away from linux and any other OS through its unique design. but being opinionated does not mean software does not deserve a respective thanks.*)
-
+Special thanks to Mark Sordestom for their artwork contributions, and to all contributors who have helped improve this project.
 
 ---
 
 ## License
 
-BSD 3-Clause. Go wild. See `LICENSE`. Don't sue me if it fucks up your PC. It probably won't.
-
-
+BSD 3-Clause. See `LICENSE` for details.
