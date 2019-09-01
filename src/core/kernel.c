@@ -39,26 +39,7 @@ static void start_xnx_compositor(void) {
                    stats_after.heap_used / 1024, stats_after.heap_free / 1024,
                    memory_largest_free_block() / 1024);
 
-    /* If gdm exists, it will open /dev/fb0 directly (no xnx). Skip compositor. */
-    if (kernel_path_is_executable("/bin/gdm")) {
-        console_printf("[init] gdm found, skipping xnx-compositor (gdm owns fb)\n");
-        return;
-    }
-
-    /* If gosh exists, it will open /dev/fb0 directly (no xnx). Skip compositor. */
-    if (kernel_path_is_executable("/bin/gosh")) {
-        console_printf("[init] gosh found, skipping xnx-compositor (gosh owns fb)\n");
-        return;
-    }
-
-    console_printf("[init] checking xnx-compositor...\n");
-    if (!kernel_path_is_executable("/bin/xnx-compositor")) {
-        console_printf("[init] xnx-compositor not executable\n");
-        return;
-    }
-    console_printf("[init] xnx-compositor OK, spawning...\n");
-
-    {
+    if (kernel_path_is_executable("/bin/xnx-compositor")) {
         int pid = task_spawn_background("/bin/xnx-compositor");
         console_printf("[init] XNX compositor spawn: pid=%d\n", pid);
     }
@@ -152,11 +133,7 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     {
         memory_defragment();
         int app_status = -1;
-        if (kernel_path_is_executable("/bin/gdm")) {
-            const char *app_argv[] = {"/bin/gdm", NULL};
-            app_status = task_run_argv_alongside(NULL, "/bin/gdm", 1, app_argv);
-            console_printf("[init] gdm exited with status %d\n", app_status);
-        } else if (kernel_path_is_executable("/bin/gosh")) {
+        if (kernel_path_is_executable("/bin/gosh")) {
             const char *app_argv[] = {"/bin/gosh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
             console_printf("[init] gosh exited with status %d\n", app_status);
@@ -168,10 +145,6 @@ void kernel_main(u32 magic, u32 mbi_addr) {
             const char *app_argv[] = {"/bin/terminal", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/terminal", 1, app_argv);
             console_printf("[init] terminal exited with status %d\n", app_status);
-        } else if (kernel_path_is_executable("/bin/gosh")) {
-            const char *app_argv[] = {"/bin/gosh", NULL};
-            app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
-            console_printf("[init] gosh exited with status %d\n", app_status);
         } else {
             console_printf("[init] no shell found, halting\n");
         }

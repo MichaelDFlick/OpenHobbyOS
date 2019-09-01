@@ -1,6 +1,6 @@
 # OpenHobbyOS (OHOS)
 
-![screenshot](assets/ohm.png)
+![ohm!](assets/ohm.png)
 
 OpenHobbyOS is a 32-bit x86 hobby operating system built from scratch. It features a monolithic kernel with paging, preemptive multitasking, a POSIX-like syscall interface, a VFS stack with initrd/ext2/devfs, a custom compositor (XNX), and a growing ecosystem of ported software including Qt6, Doom, FFmpeg, and more.
 
@@ -20,8 +20,7 @@ OpenHobbyOS is a 32-bit x86 hobby operating system built from scratch. It featur
 - **lwIP TCP/IP** stack with RTL8139 NIC driver
 - **ACPI power management** via uACPI (shutdown, reboot, suspend)
 - **newlib C library** cross-compiled for `i686-openhobbyos-elf`
-- **GDM login manager**: TUI login screen using nuklear
-- **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib, GDM, ohplay (audio player), Qt6 with QPA plugin
+- **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib, ohplay (audio player), Qt6 with QPA plugin
 
 ---
 
@@ -109,7 +108,6 @@ Block layer: VFS → blkdev → ATA → Disk
 
 - **libtsm**: terminal emulator linked into the kernel providing VT100 escape sequence handling, ANSI colors, and scrollback
 - **XNX**: custom display protocol over Unix domain sockets. Clients create surfaces and push pixel buffers; the compositor renders with pixman and flushes to the hardware framebuffer at 33ms intervals
-- **GDM**: TUI login manager using nuklear, draws directly to `/dev/fb0`
 
 ### Network
 

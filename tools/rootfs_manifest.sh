@@ -38,9 +38,6 @@ ohos_rootfs_append_entries() {
     _out+=("$ROOT/build/user/toolbox.elf::/bin/reboot")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/suspend")
     _out+=("$ROOT/build/user/toolbox.elf::/bin/help")
-    if [[ -f "$ROOT/build/ports/sysroot/bin/gdm" ]]; then
-        _out+=("$ROOT/build/ports/sysroot/bin/gdm::/bin/gdm")
-    fi
     if [[ -f "$ROOT/build/ports/sysroot/bin/gosh" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/gosh::/bin/gosh")
     fi

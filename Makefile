@@ -18,7 +18,6 @@ TERMINAL_BIN := $(PORTS_SYSROOT)/bin/terminal
 FFMPEG_STAMP := $(PORTS_DIR)/ffmpeg/.built
 OHPLAY_BIN := $(PORTS_DIR)/ohplay/install/bin/ohplay
 GOSH_BIN := $(PORTS_SYSROOT)/bin/gosh
-GDM_BIN := $(PORTS_SYSROOT)/bin/gdm
 
 PORTS_TINYGL_A := $(PORTS_SYSROOT)/lib/libtinygl.a
 PORTS_GEARS_BIN := $(PORTS_SYSROOT)/bin/gears
@@ -167,7 +166,7 @@ endef
 $(foreach prog,$(USER_PROGRAMS),$(eval $(call user_program_template,$(prog))))
 USER_BINS := $(addprefix $(BUILD_DIR)/user/,$(addsuffix .elf,$(USER_PROGRAMS)))
 
-.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-terminal ports-gosh ports-gdm ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
+.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-terminal ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
 
 all: $(ISO)
 
@@ -296,10 +295,6 @@ $(GOSH_BIN): user/gosh.c user/lib/syscall.c user/lib/runtime.c $(CAIRO_PC) $(FRE
 	mkdir -p $(PORTS_DIR)/gosh
 	ports/gosh/build-gosh.sh $(PORTS_DIR)/gosh $(PORTS_SYSROOT)
 
-$(GDM_BIN): user/gdm.c user/lib/nuklear.h user/lib/stb_truetype.h $(PORTS_SYSROOT)/.newlib.stamp ports/gdm/build-gdm.sh | $(PORTS_DIR)
-	mkdir -p $(PORTS_DIR)/gdm
-	ports/gdm/build-gdm.sh $(PORTS_DIR)/gdm $(PORTS_SYSROOT)
-
 $(OHPLAY_BIN): ports/ohplay/build-ohplay.sh $(XNX_COMPOSITOR) $(FFMPEG_STAMP) $(ZLIB_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
 	ports/ohplay/build-ohplay.sh $(PORTS_DIR)/ohplay $(PORTS_SYSROOT)
 
@@ -316,7 +311,7 @@ $(QTDECL_STAMP): ports/qtdeclarative/build-qtdeclarative.sh $(QT_STAMP)
 	ports/qtdeclarative/build-qtdeclarative.sh $(PORTS_DIR)/qtdeclarative $(PORTS_SYSROOT) || true
 	touch $@
 
-$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(GOSH_BIN) $(GDM_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD | $(BUILD_DIR)
+$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(GOSH_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD | $(BUILD_DIR)
 	tools/build_initrd.sh $@
 
 $(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
@@ -354,8 +349,6 @@ ports-installer: $(INSTALLER_BIN)
 ports-terminal: $(TERMINAL_BIN)
 
 ports-gosh: $(GOSH_BIN)
-
-ports-gdm: $(GDM_BIN)
 
 ports-ohplay: $(OHPLAY_BIN)
 

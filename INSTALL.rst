@@ -16,9 +16,8 @@ What is all this
 
 OpenHobbyOS is a 32-bit x86 hobby OS with a monolithic kernel, a userspace
 stack built on newlib, and a graphical compositor called XNX. It also now has
-Qt6, a nuklear-based TUI login manager called GDM, an audio player (ohplay),
-and a snapshot boot feature that resumes from disk. Because apparently that's
-something you can do when you don't have a life.
+Qt6, an audio player (ohplay), and a snapshot boot feature that resumes from
+disk.
 
 The full stack looks like this::
 
@@ -387,24 +386,12 @@ The boot flow (what happens when you press "run")
    c. Initializes the PS/2 keyboard and mouse
    d. Mounts initrd, creates devfs
    e. Starts the scheduler
-   f. Launches ``start_xnx_compositor()`` — picks the first available display
-      server: **GDM** (owns fb directly via nuklear) → **gosh** (text UI) →
-      **XNX compositor** (pixman compositing for Qt6 apps)
-4. **init** runs the first available user session:
-   a. **GDM** — TUI login screen with nuklear. Asks for credentials, doesn't
-      validate them. If ``/bin/gdm`` exists, this is what you see first.
-   b. **gosh** — fallback shell if GDM isn't built.
-   c. **sh** / **terminal** — last-resort shells.
-5. **GDM** (the graphical path): draws a nuklear login UI on ``/dev/fb0``
-   directly, reads keyboard input, and presents a retro login prompt. When GDM
-   exits (it crashes sometimes — "it's a feature"), the kernel falls through to
-   gosh so you still get a shell.
-6. **XNX compositor**: starts only if neither GDM
-   nor gosh is present:
-   a. Opens ``/dev/fb0``, maps the framebuffer
-   b. Opens ``/dev/mouse`` for pointer events
-   c. Listens on ``/tmp/xnx.sock`` for client connections
-   d. Enters the event loop (poll + composite every 33ms)
+   f. Launches ``start_xnx_compositor()`` — spawns the XNX compositor
+      which opens ``/dev/fb0``, listens on ``/tmp/xnx.sock`` for client
+      connections, and composites surfaces with pixman every 33ms
+4. **init** runs the first available shell:
+   a. **gosh** — default shell
+   b. **sh** / **terminal** — fallback shells
 
 If anything fails, you'll see error messages on the framebuffer console.
 Probably something about a segfault. That's normal. It's a feature.
