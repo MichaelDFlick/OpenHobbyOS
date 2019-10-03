@@ -158,7 +158,7 @@ static const u32 console_ansi_colours[16] = {
 };
 
 void console_load_ttf(void) {
-    console_write("[fb] TTF font loading disabled (freetype removed)\n");
+    console_write("[fb] TTF font loading not available\n");
 }
 
 static int console_draw_cb(struct tsm_screen *con, uint64_t id,
