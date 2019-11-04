@@ -1,7 +1,3 @@
-/* gosh.c - OpenHobbyOS native framebuffer shell
- * Uses Cairo+FreeType for text rendering, /dev/fb0 directly for display.
- * Prompt at top-left, terminal output scrolls below.
- */
 #include "runtime.h"
 #include "syscall.h"
 
@@ -93,6 +89,21 @@ static const double g_colors[][3] = {
 
 struct gosh_theme { int user, host, path, symbol, error, success, default_c, warning, title; };
 static struct gosh_theme g_thm;
+
+static void pixel_fill(int x, int y, int w, int h, uint32_t color) {
+    for (int row = y; row < y + h && row < g_win_h; row++) {
+        if (row < 0) continue;
+        for (int col = x; col < x + w && col < g_win_w; col++) {
+            if (col < 0) continue;
+            g_pixels[row * g_win_w + col] = color;
+        }
+    }
+}
+
+static void pixel_clear(uint32_t color) {
+    unsigned int n = (unsigned int)(g_win_w * g_win_h);
+    for (unsigned int i = 0; i < n; i++) g_pixels[i] = color;
+}
 
 static void term_clear(void) {
     g_term_count = g_term_row = g_term_col = 0;
@@ -219,13 +230,18 @@ static void detect_color_support(void) {
 
 static void write_ch(char ch) { term_write(&ch, 1); }
 static void write_str(const char *s) { term_write(s, (int)u_strlen(s)); }
-static void write_buf(const char *buf, unsigned int len) { term_write(buf, (int)len); }
 
 struct gosh_fb_bitfield { uint32_t offset, length, msb_right; };
 struct gosh_fb_vinfo {
     uint32_t xres, yres, xres_virtual, yres_virtual, xoffset, yoffset, bits_per_pixel, grayscale;
     struct gosh_fb_bitfield red, green, blue, transp;
 };
+
+static void text_at(int x, int y, const char *text, double r, double g, double b) {
+    cairo_set_source_rgb(g_cr, r, g, b);
+    cairo_move_to(g_cr, (double)x, (double)(y + g_font_ascent));
+    cairo_show_text(g_cr, text);
+}
 
 static int display_init(void) {
     g_fb_fd = sys_open("/dev/fb0", 2, 0);
@@ -297,19 +313,29 @@ static int display_init(void) {
     return 0;
 }
 
+static void fb_blit(void) {
+    uint8_t *dst = (uint8_t *)g_fb_map;
+    uint8_t *src = (uint8_t *)g_pixels;
+    for (int y = 0; y < g_win_h; y++) {
+        for (int x = 0; x < g_win_w; x++) {
+            dst[x*3] = src[x*4];
+            dst[x*3+1] = src[x*4+1];
+            dst[x*3+2] = src[x*4+2];
+        }
+        dst += g_win_w * 3;
+        src += g_win_w * 4;
+    }
+}
+
 static void draw_prompt_line(int row, int *out_x) {
     int x = 0;
-    int y = row * g_font_h + g_font_ascent;
-    cairo_set_source_rgb(g_cr, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
+    int y = row * g_font_h;
 
     if (g_last_exit != 0) {
-        cairo_set_source_rgb(g_cr, g_colors[1][0], g_colors[1][1], g_colors[1][2]);
         char tmp[16];
         snprintf(tmp, sizeof(tmp), "%d ", g_last_exit);
-        cairo_move_to(g_cr, (double)x, (double)y);
-        cairo_show_text(g_cr, tmp);
+        text_at(x, y, tmp, g_colors[1][0], g_colors[1][1], g_colors[1][2]);
         x += (int)u_strlen(tmp) * g_font_w;
-        cairo_set_source_rgb(g_cr, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
     }
 
     const char *user = g_logged_in && g_session_user[0] ? g_session_user : "root";
@@ -325,58 +351,42 @@ static void draw_prompt_line(int row, int *out_x) {
     if (slash && slash != g_cwd) cwd_short = slash + 1;
 
     char buf[256];
-    cairo_set_source_rgb(g_cr, g_colors[9][0], g_colors[9][1], g_colors[9][2]);
-    cairo_move_to(g_cr, (double)x, (double)y);
     snprintf(buf, sizeof(buf), "%s@", user);
-    cairo_show_text(g_cr, buf);
+    text_at(x, y, buf, g_colors[9][0], g_colors[9][1], g_colors[9][2]);
     x += (int)u_strlen(buf) * g_font_w;
 
-    cairo_set_source_rgb(g_cr, g_colors[10][0], g_colors[10][1], g_colors[10][2]);
     snprintf(buf, sizeof(buf), "%s:", host);
-    cairo_move_to(g_cr, (double)x, (double)y);
-    cairo_show_text(g_cr, buf);
+    text_at(x, y, buf, g_colors[10][0], g_colors[10][1], g_colors[10][2]);
     x += (int)u_strlen(buf) * g_font_w;
 
-    cairo_set_source_rgb(g_cr, g_colors[12][0], g_colors[12][1], g_colors[12][2]);
-    cairo_move_to(g_cr, (double)x, (double)y);
-    cairo_show_text(g_cr, cwd_short);
+    text_at(x, y, cwd_short, g_colors[12][0], g_colors[12][1], g_colors[12][2]);
     x += (int)u_strlen(cwd_short) * g_font_w;
 
-    cairo_set_source_rgb(g_cr, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
     snprintf(buf, sizeof(buf), " %c ", is_root ? '#' : '$');
-    cairo_move_to(g_cr, (double)x, (double)y);
-    cairo_show_text(g_cr, buf);
+    text_at(x, y, buf, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
     x += (int)u_strlen(buf) * g_font_w;
 
     int input_x = x;
 
-    cairo_set_source_rgb(g_cr, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
     for (int i = 0; i < g_input_pos; i++) {
-            char ch = g_input_buf[i];
-        cairo_move_to(g_cr, (double)x, (double)y);
-        char cb[2] = {ch, '\0'};
-        cairo_show_text(g_cr, cb);
+        char cb[2] = {g_input_buf[i], '\0'};
+        text_at(x, y, cb, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
         x += g_font_w;
     }
 
     int cursor_x = input_x + g_input_cursor * g_font_w;
-    cairo_rectangle(g_cr, (double)cursor_x, (double)(row * g_font_h), (double)g_font_w, (double)g_font_h);
-    cairo_set_source_rgb(g_cr, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
-    cairo_fill(g_cr);
+    pixel_fill(cursor_x, row * g_font_h, g_font_w, g_font_h, 0xCCCCCC);
     {
         char ch = g_input_cursor < g_input_pos ? g_input_buf[g_input_cursor] : ' ';
-        cairo_move_to(g_cr, (double)cursor_x, (double)y);
-        cairo_set_source_rgb(g_cr, g_colors[0][0], g_colors[0][1], g_colors[0][2]);
         char cb[2] = {ch, '\0'};
-        cairo_show_text(g_cr, cb);
+        text_at(cursor_x, y, cb, g_colors[0][0], g_colors[0][1], g_colors[0][2]);
     }
 
     if (out_x) *out_x = input_x;
 }
 
 static void display_update(void) {
-    cairo_set_source_rgb(g_cr, g_colors[0][0], g_colors[0][1], g_colors[0][2]);
-    cairo_paint(g_cr);
+    pixel_clear(0x303136);
 
     int term_rows = g_vis_rows - 1;
     int start = g_term_count - term_rows;
@@ -386,17 +396,15 @@ static void display_update(void) {
         int draw_row = i - start + 1;
         if (draw_row >= g_vis_rows) break;
         int x = 0;
-        int y = draw_row * g_font_h + g_font_ascent;
+        int y = draw_row * g_font_h;
         for (int ci = 0; ci < TERM_COLS; ci++) {
             unsigned char ch = (unsigned char)g_term_buf[i][ci];
             if (ch == 0) break;
             unsigned char attr = g_term_attr[i][ci];
             int fg = attr & 0x0F;
             if (fg > 15) fg = 15;
-            cairo_set_source_rgb(g_cr, g_colors[fg][0], g_colors[fg][1], g_colors[fg][2]);
             char buf[2] = {(char)ch, '\0'};
-            cairo_move_to(g_cr, (double)x, (double)y);
-            cairo_show_text(g_cr, buf);
+            text_at(x, y, buf, g_colors[fg][0], g_colors[fg][1], g_colors[fg][2]);
             x += g_font_w;
         }
     }
@@ -404,19 +412,7 @@ static void display_update(void) {
     draw_prompt_line(0, NULL);
 
     cairo_surface_flush(g_cs);
-    {
-        uint8_t *dst = (uint8_t *)g_fb_map;
-        uint8_t *src = (uint8_t *)g_pixels;
-        for (int y = 0; y < g_win_h; y++) {
-            for (int x = 0; x < g_win_w; x++) {
-                dst[x*3] = src[x*4];
-                dst[x*3+1] = src[x*4+1];
-                dst[x*3+2] = src[x*4+2];
-            }
-            dst += g_win_w * 3;
-            src += g_win_w * 4;
-        }
-    }
+    fb_blit();
     g_dirty = 0;
 }
 
@@ -497,12 +493,11 @@ static void redraw_shell_adapter(const char *buf, int len, int cursor, void *ctx
     (void)ctx; redraw_shell_line(buf, len, cursor);
 }
 
-static int read_line_common(char *buf, int max, int echo, int use_history,
+static int read_line_common(char *buf, int max, int use_history,
     void (*redraw)(const char *, int, int, void *), void *redraw_ctx) {
     int pos = 0, cursor = 0, history_index = g_hist_count;
     char current_line_backup[LINE_MAX]; int has_backup = 0;
     if (!buf || max < 2) return -1;
-    (void)echo;
     buf[0] = '\0'; current_line_backup[0] = '\0';
     redraw(buf, pos, cursor, redraw_ctx);
     display_update();
@@ -596,7 +591,7 @@ static int read_line_common(char *buf, int max, int echo, int use_history,
 }
 
 static int read_line(char *buf, int max) {
-    return read_line_common(buf, max, 1, 1, redraw_shell_adapter, NULL);
+    return read_line_common(buf, max, 1, redraw_shell_adapter, NULL);
 }
 
 static void skip_ws(const char **p) { while (**p == ' ' || **p == '\t') (*p)++; }
@@ -799,6 +794,109 @@ static void gosh_set_user(const char *username) {
     g_last_exit = 0;
 }
 
+static int login_screen(char *out_user, int max_user) {
+    char username[64] = {0};
+    char password[64] = {0};
+    char error[256] = {0};
+    int field = 0;
+    int pos_u = 0, pos_p = 0;
+
+    for (;;) {
+        pixel_clear(0x121418);
+
+        int cx = g_win_w / 2;
+        int cy = g_win_h / 2;
+
+        int box_w = 400;
+        int box_h = 260;
+        int bx = cx - box_w / 2;
+        int by = cy - box_h / 2;
+
+        pixel_fill(bx, by, box_w, box_h, 0x1A1C22);
+        pixel_fill(bx, by, box_w, 1, 0x3A5CC0);
+        pixel_fill(bx, by + box_h - 1, box_w, 1, 0x101218);
+
+        text_at(cx - 90, by + 30, "Welcome to OpenHobbyOS", 0.63, 0.75, 1.0);
+
+        text_at(bx + 30, by + 70, "Username:", 0.70, 0.73, 0.78);
+        pixel_fill(bx + 30, by + 92, box_w - 60, 32, 0x26282E);
+        pixel_fill(bx + 30, by + 92, box_w - 60, 1, 0x41444C);
+        {
+            char tmp[64];
+            int ulen = pos_u < (int)sizeof(username) ? pos_u : (int)sizeof(username) - 1;
+            memcpy(tmp, username, (size_t)ulen); tmp[ulen] = '\0';
+            text_at(bx + 36, by + 98, tmp, 0.84, 0.85, 0.88);
+            if (field == 0) {
+                int cur_x = bx + 36 + ulen * g_font_w;
+                pixel_fill(cur_x, by + 98, g_font_w, g_font_h, 0x8C9EFF);
+            }
+        }
+
+        text_at(bx + 30, by + 136, "Password:", 0.70, 0.73, 0.78);
+        pixel_fill(bx + 30, by + 158, box_w - 60, 32, 0x26282E);
+        pixel_fill(bx + 30, by + 158, box_w - 60, 1, 0x41444C);
+        {
+            char masked[64];
+            int plen = pos_p < (int)sizeof(password) ? pos_p : (int)sizeof(password) - 1;
+            for (int i = 0; i < plen && i < 63; i++) masked[i] = '*';
+            masked[plen] = '\0';
+            text_at(bx + 36, by + 164, masked, 0.84, 0.85, 0.88);
+            if (field == 1) {
+                int cur_x = bx + 36 + plen * g_font_w;
+                pixel_fill(cur_x, by + 164, g_font_w, g_font_h, 0x8C9EFF);
+            }
+        }
+
+        if (error[0]) {
+            text_at(bx + 30, by + 210, error, 0.94, 0.31, 0.29);
+        }
+
+        cairo_surface_flush(g_cs);
+        fb_blit();
+
+        struct pollfd pfd;
+        pfd.fd = 0;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int ret = poll(&pfd, 1, 50);
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            unsigned char ch;
+            if (read(0, &ch, 1) == 1) {
+                if (ch == '\t') {
+                    field = field == 0 ? 1 : 0;
+                } else if (ch == '\n' || ch == '\r') {
+                    if (field == 0) {
+                        field = 1;
+                    } else {
+                        int auth_ok = (sys_auth(username, password) == 0);
+                        if (auth_ok) {
+                            unsigned int ulen = u_strlen(username);
+                            unsigned int mlen = (unsigned int)max_user - 1;
+                            if (ulen > mlen) ulen = mlen;
+                            memcpy(out_user, username, ulen);
+                            out_user[ulen] = '\0';
+                            return 0;
+                        } else {
+                            snprintf(error, sizeof(error), "Authentication failed");
+                            password[0] = '\0';
+                            pos_p = 0;
+                            field = 1;
+                        }
+                    }
+                } else if (ch == 127 || ch == 8) {
+                    if (field == 0 && pos_u > 0) { username[--pos_u] = '\0'; }
+                    else if (field == 1 && pos_p > 0) { password[--pos_p] = '\0'; }
+                } else if (ch >= 32) {
+                    if (field == 0 && pos_u < (int)sizeof(username) - 1) { username[pos_u++] = (char)ch; username[pos_u] = '\0'; }
+                    else if (field == 1 && pos_p < (int)sizeof(password) - 1) { password[pos_p++] = (char)ch; password[pos_p] = '\0'; }
+                }
+            }
+        } else {
+            sys_sched_yield();
+        }
+    }
+}
+
 static const char *gosh_get_user(void) {
     const char *u = env_get("USER");
     if (!u) u = env_get("LOGNAME");
@@ -806,22 +904,46 @@ static const char *gosh_get_user(void) {
     return u;
 }
 
+static int builtin_logout(int argc, const char **argv) {
+    (void)argc; (void)argv;
+    g_logged_in = 0;
+    g_session_user[0] = '\0';
+    return -1;
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv;
     g_envp = envp; g_last_exit = 0; g_exit_code = 0; g_hist_count = 0; g_hist_pos = 0;
     load_theme(); detect_color_support();
-    gosh_set_user(gosh_get_user());
+
     if (display_init() < 0) return 1;
-    write_str("GOSH! v2.0 - OpenHobbyOS Shell\n");
-    term_write("Type 'help' for available commands.\n", 37);
-    display_update();
-    char line[LINE_MAX];
-    for (;;) {
-        maybe_emit_separator(); show_prompt();
-        int len = read_line(line, sizeof(line));
-        if (len < 0) break;
-        execute_line(line);
-        if (g_last_exit < 0) break;
+
+    const char *env_user = gosh_get_user();
+    if (env_user && *env_user && u_strcmp(env_user, "root") != 0) {
+        gosh_set_user(env_user);
     }
-    return (g_last_exit == -1) ? g_exit_code : g_last_exit;
+
+    for (;;) {
+        if (!g_logged_in) {
+            char login_user[32] = {0};
+            login_screen(login_user, sizeof(login_user));
+            gosh_set_user(login_user);
+            term_clear();
+            write_str("GOSH! v2.0 - OpenHobbyOS Shell\n");
+            term_write("Type 'help' for available commands.\n", 37);
+            display_update();
+        }
+
+        char line[LINE_MAX];
+        for (;;) {
+            maybe_emit_separator(); show_prompt();
+            int len = read_line(line, sizeof(line));
+            if (len < 0) break;
+            execute_line(line);
+            if (g_last_exit < 0) break;
+        }
+        if (g_exit_code == 0 && g_last_exit == -1 && g_logged_in) {
+            return 0;
+        }
+    }
 }

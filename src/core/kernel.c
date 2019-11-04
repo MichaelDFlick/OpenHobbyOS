@@ -39,6 +39,11 @@ static void start_xnx_compositor(void) {
                    stats_after.heap_used / 1024, stats_after.heap_free / 1024,
                    memory_largest_free_block() / 1024);
 
+    if (kernel_path_is_executable("/bin/gosh")) {
+        console_printf("[init] gosh owns framebuffer, skipping compositor\n");
+        return;
+    }
+
     if (kernel_path_is_executable("/bin/xnx-compositor")) {
         int pid = task_spawn_background("/bin/xnx-compositor");
         console_printf("[init] XNX compositor spawn: pid=%d\n", pid);
