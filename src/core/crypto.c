@@ -2,6 +2,13 @@
 
 #include <stddef.h>
 
+#include "memory.h"
+#include "string.h"
+
+#include <mbedtls/aes.h>
+#include <mbedtls/pkcs5.h>
+#include <mbedtls/platform.h>
+
 static const u32 sha256_initial_state[8] = {
     0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
     0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
@@ -154,4 +161,74 @@ bool crypto_constant_time_equal(const void *left, const void *right, size_t leng
     }
 
     return diff == 0;
+}
+
+static void *kmalloc_cb(size_t nmemb, size_t size) {
+    return kcalloc(nmemb, size);
+}
+
+static void kfree_cb(void *ptr) {
+    kfree(ptr);
+}
+
+void crypto_init(void) {
+    mbedtls_platform_set_calloc_free(kmalloc_cb, kfree_cb);
+}
+
+bool crypto_derive_key(const char *passphrase, size_t pass_len,
+                       const u8 salt[CRYPTO_SALT_SIZE], u32 iterations,
+                       u8 key[CRYPTO_DERIVED_KEY_SIZE]) {
+    return mbedtls_pkcs5_pbkdf2_hmac_ext(
+        MBEDTLS_MD_SHA256,
+        (const u8 *)passphrase, pass_len,
+        salt, CRYPTO_SALT_SIZE,
+        iterations,
+        CRYPTO_DERIVED_KEY_SIZE,
+        key
+    ) == 0;
+}
+
+void crypto_encrypt_sector(const u8 key[CRYPTO_AES256_XTS_KEY_SIZE],
+                           u8 sector[CRYPTO_SECTOR_SIZE], u64 sector_num) {
+    mbedtls_aes_xts_context ctx;
+    u8 data_unit[16];
+
+    for (int i = 0; i < 8; i++) {
+        data_unit[i] = (u8)(sector_num >> (i * 8));
+    }
+    for (int i = 8; i < 16; i++) {
+        data_unit[i] = 0;
+    }
+
+    mbedtls_aes_xts_init(&ctx);
+    mbedtls_aes_xts_setkey_enc(&ctx, key, CRYPTO_AES256_XTS_KEY_SIZE * 8);
+    mbedtls_aes_crypt_xts(&ctx, MBEDTLS_AES_ENCRYPT, CRYPTO_SECTOR_SIZE,
+                          data_unit, sector, sector);
+    mbedtls_aes_xts_free(&ctx);
+}
+
+void crypto_decrypt_sector(const u8 key[CRYPTO_AES256_XTS_KEY_SIZE],
+                           u8 sector[CRYPTO_SECTOR_SIZE], u64 sector_num) {
+    mbedtls_aes_xts_context ctx;
+    u8 data_unit[16];
+
+    for (int i = 0; i < 8; i++) {
+        data_unit[i] = (u8)(sector_num >> (i * 8));
+    }
+    for (int i = 8; i < 16; i++) {
+        data_unit[i] = 0;
+    }
+
+    mbedtls_aes_xts_init(&ctx);
+    mbedtls_aes_xts_setkey_dec(&ctx, key, CRYPTO_AES256_XTS_KEY_SIZE * 8);
+    mbedtls_aes_crypt_xts(&ctx, MBEDTLS_AES_DECRYPT, CRYPTO_SECTOR_SIZE,
+                          data_unit, sector, sector);
+    mbedtls_aes_xts_free(&ctx);
+}
+
+void crypto_secure_zero(void *ptr, size_t len) {
+    volatile u8 *p = (volatile u8 *)ptr;
+    for (size_t i = 0; i < len; i++) {
+        p[i] = 0;
+    }
 }

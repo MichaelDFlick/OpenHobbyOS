@@ -1,151 +1,84 @@
-# OpenHobbyOS (OHOS)
+## OpenHobbyOS (OHOS) — Lightweight. Blazingly Fast. Secure.
 
 ![ohm!](assets/ohm.png)
 
-OpenHobbyOS is a 32-bit x86 hobby operating system built from scratch. It features a monolithic kernel with paging, preemptive multitasking, a POSIX-like syscall interface, a VFS stack with initrd/ext2/devfs, a custom compositor (XNX), and a growing ecosystem of ported software including Qt6, Doom, FFmpeg, and more.
+Welcome to OpenHobbyOS (OHOS), a 32-bit x86 hobby operating system built from the ground up with security as a first-class citizen, not an afterthought.
+
+OHOS is our labor of love. a project born from a desire to understand how operating systems really work, from the first line of assembly to running complex graphical applications. What started as a kernel experiment has grown into a functional, POSIX-like environment capable of running everything from retro games like Doom to modern frameworks like Qt6 — all while keeping the footprint small and the attack surface minimal.
+
+We believe that building an OS should be accessible, educational, and fun. Whether you're here to dive into the kernel source or just want to see how much we can squeeze out of a custom 32-bit architecture, we're glad to have you.
 
 ![screenshot2](screenshots/OH2.png)
 ![screenshot1](screenshots/OH1.png)
 
----
-
-## Features
-
-- **Preemptive multitasking** with a round-robin scheduler
-- **80+ syscall numbers** via `int 0x80`, Linux ABI-compatible
-- **Per-process page directories** with copy-on-write fork and fully enabled paging
-- **VFS stack**: initrd (custom cpio-like), ext2 (read/write), devfs
-- **libtsm framebuffer console** with full VT100 emulation, ANSI colors, scrollback; output to both framebuffer and serial
-- **XNX display protocol**: Unix domain socket + pixman compositing with per-surface z-order, mouse cursor rendering, and 33ms frame timing
-- **lwIP TCP/IP** stack with RTL8139 NIC driver
-- **ACPI power management** via uACPI (shutdown, reboot, suspend)
-- **newlib C library** cross-compiled for `i686-openhobbyos-elf`
-- **Ported software**: fastfetch, Doom, XNX compositor + demo, FFmpeg, TinyGL, gears, lwIP, libtsm, uACPI, pixman, zlib, ohplay (audio player), Qt6 with QPA plugin
+> A Quick Note: While OHOS has come a long way, it remains an active hobby project under constant development. It's a fantastic learning platform, but we don't recommend using it for critical production workloads just yet!
 
 ---
 
-## Requirements
+## What's Under the Hood?
 
-- IA-32 / i386 CPU or later (all modern x86-64 CPUs support 32-bit mode)
-- 200-500 MB RAM
-- VGA-compatible framebuffer
-- CD-ROM or USB boot support
+We've focused on creating a balanced environment that feels familiar to Linux users while maintaining the unique architecture of a custom hobbyist system — one that prioritizes security, performance, and simplicity:
 
----
-
-## Build dependencies
-
-```bash
-gcc-multilib (or i686-elf-gcc)
-nasm >= 2.15
-make, python3 >= 3.8, xorriso, grub-mkrescue, mtools
-```
-
-Optional for ports: `meson, ninja, pkg-config, autoconf, automake, cmake`
+* Kernel Core: A monolithic design with preemptive multitasking and a round-robin scheduler to keep things snappy.
+* Memory Management: Full paging support with per-process page directories and copy-on-write fork for efficient process management.
+* Compatibility: We target Linux ABI compatibility via an int 0x80 syscall interface, offering 80+ syscalls to keep your favorite ported apps running smoothly.
+* VFS Stack: A robust virtual filesystem supporting initrd, devfs, and full read/write ext2 filesystems.
+* Disk Encryption: Full AES-256-XTS disk encryption at boot using mbedTLS. The kernel prompts for a passphrase before mounting the root filesystem and transparently encrypts/decrypts every sector on the fly. The key is derived via PBKDF2-HMAC-SHA256 with a random salt — your data stays encrypted at rest, and we never store the passphrase.
+* Graphics & UI: Our custom XNX compositor handles windowing and z-ordering, backed by pixman. We also include libtsm for a high-quality, VT100-compliant terminal emulator.
+* Networking: Full TCP/IP support via lwIP, driven by our custom RTL8139 PCI NIC driver.
+* Power Management: Native support for shutdown, reboot, and suspend using uACPI.
 
 ---
 
-## Quick start
+## What Can It Run?
 
-Full build and installation documentation: [`INSTALL.rst`](INSTALL.rst).
+We've put a lot of work into our i686-openhobbyos-elf toolchain so you can bring familiar software to our ecosystem. Current ports include:
 
-```bash
-# Build everything (kernel, ports, initrd, ISO)
-make all
-
-# Run in QEMU
-make run
-
-# Run with serial debug output
-make run-debug
-
-# Clean build artifacts
-make clean
-```
-
-The bootable ISO is produced at `build/ohos.iso`.
+* Multimedia: FFmpeg and ohplay (our custom audio player).
+* Gaming: A working port of Doom and TinyGL.
+* Tools: Fastfetch, zlib, and a fully functional Qt6 environment using our custom QPA plugin.
 
 ---
 
-## Architecture
+## Getting Started
 
-### Memory layout
+If you want to poke around or build the system yourself, you'll need an x86-compatible environment (or a virtual machine).
 
-```txt
-0x00000000 - 0x0009FFFF: Low memory (reserved)
-0x000A0000 - 0x000FFFFF: VGA/ROM (reserved)
-0x00100000 - kernel_end:   Kernel code + data (identity mapped)
-kernel_end - 0x02FF0000:   Kernel heap
-0x03000000+:               User ELF loading (48MB+ available)
-0x20000000+:               User mmap space (shared libs, mappings)
-0x36100000:                User TLS (thread-local storage, per-process)
-```
+### The Basics
+* Architecture: IA-32 / i386 (or x86-64 in 32-bit mode).
+* Memory: 200-500 MB RAM is plenty to get the full experience.
+* Build Tools: You'll need gcc-multilib (or i686-elf-gcc), nasm (2.15+), make, python3, xorriso, and grub-mkrescue.
 
-Paging is enabled on the CPU with per-process page directories.
+### Quick Build
+Clone the repo and jump right in:
 
-### Syscall interface
+    # Build the kernel, ports, and generate a bootable ISO
+    make all
 
-Linux ABI-compatible via `int 0x80`:
+    # Launch the OS in QEMU
+    make run
 
-- **File I/O**: open, read, write, close, lseek, ioctl, mmap, brk
-- **Process**: fork, execve, wait, exit, getpid, spawn
-- **IPC**: pipe, Unix domain sockets
-- **Time**: clock_gettime, nanosleep, gettimeofday
-- **OHOS-specific**: spawn, yield (syscall numbers 400+)
+    # Run with serial output if you're debugging
+    make run-debug
 
-### Filesystem stack
-
-```txt
-VFS → initrd (read-only, boot) | ext2 (read/write, disk) | devfs (/dev/*)
-Block layer: VFS → blkdev → ATA → Disk
-```
-
-- **initrd**: custom cpio-like archive embedded in the kernel containing all boot-time binaries
-- **ext2**: full read/write support with inode, block group, and directory entry handling
-- **devfs**: provides `/dev/fb0`, `/dev/null`, `/dev/zero`, `/dev/mouse`, `/dev/tty`, and console
-
-### Graphics
-
-- **libtsm**: terminal emulator linked into the kernel providing VT100 escape sequence handling, ANSI colors, and scrollback
-- **XNX**: custom display protocol over Unix domain sockets. Clients create surfaces and push pixel buffers; the compositor renders with pixman and flushes to the hardware framebuffer at 33ms intervals
-
-### Network
-
-```txt
-lwIP → netdev → RTL8139 PCI NIC
-```
-
-lwIP is ported as a userspace library. The RTL8139 driver performs PCI enumeration and MMIO-based I/O.
+You can find the final bootable ISO at build/ohos.iso.
 
 ---
 
-## Project history
+## A Bit of History
 
-OHOS originated from ElexerKernel, a kernel project started in 2013. The project was revived and expanded with a userspace, Linux ABI compatibility, and the current port ecosystem. The first publicly reproducible repository was published in 2025.
+OHOS traces its roots back to the ElexerKernel project, which we started back in 2013. Over the years, it has evolved from a simple kernel experiment into a complete userspace ecosystem. We published the first public, reproducible repository in 2025, and we've been iterating on it ever since.
 
 ---
 
-## Acknowledgments
+## A Note of Thanks
 
-This project builds on the work of many open-source projects:
+This project stands on the shoulders of giants. A huge thank you to the developers behind the projects that make OHOS possible, including:
+uACPI, lwIP, libtsm, pixman, Qt6, FFmpeg, TinyGL, mbedTLS, and many others.
 
-- uACPI — power management
-- lwIP — TCP/IP networking stack
-- lodepng — PNG image loading
-- zlib — compression
-- pixman — pixel compositing
-- doomgeneric — Doom port
-- libtsm — VT100 terminal emulation
-- fastfetch — system information
-- FFmpeg — multimedia processing
-- TinyGL — OpenGL subset implementation
-- nuklear — immediate-mode GUI library
-- Qt6 — cross-platform application framework
-
-Special thanks to Mark Sordestom for their artwork contributions, and to all contributors who have helped improve this project.
+Special shout-out to Mark Sordestom for the fantastic artwork, and to everyone in the community who has contributed code, bug reports, and ideas.
 
 ---
 
 ## License
-
-BSD 3-Clause. See `LICENSE` for details.
+OHOS is open-source under the BSD 3-Clause License. See the LICENSE file for more details.

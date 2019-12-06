@@ -181,6 +181,9 @@ static const blkdev_ops_t ata_blkdev_ops = {
 };
 
 void ata_init(void) {
+    static bool done = false;
+    if (done) return;
+    done = true;
     memset(ata_devices, 0, sizeof(ata_devices));
     
     ata_devices[0].io_base = ATA_PRIMARY_IO;

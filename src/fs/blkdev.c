@@ -6,6 +6,9 @@
 static blkdev_t devices[BLKDEV_MAX_DEVICES];
 
 void blkdev_init(void) {
+    static bool done = false;
+    if (done) return;
+    done = true;
     memset(devices, 0, sizeof(devices));
     for (u32 i = 0; i < BLKDEV_MAX_DEVICES; i++) {
         devices[i].id = i;
