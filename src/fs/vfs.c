@@ -4,14 +4,17 @@
 
 #include "abi/linux.h"
 #include "console.h"
+#include "cpuid.h"
 #include "format.h"
 #include "initrd.h"
 #include "mbr.h"
 #include "memory.h"
+#include "paging.h"
 #include "panic.h"
 #include "pit.h"
 #include "task.h"
 #include "string.h"
+
 
 struct vfs_node {
     u64 inode;
@@ -708,27 +711,165 @@ ssize_t vfs_read(const vfs_node_t *node, u32 offset, void *buffer, size_t length
     }
 
     if (node->virtual_id != VFS_VIRTUAL_NONE) {
-        char buf[256];
+        char buf[1024];
         size_t count = 0;
 
         switch (node->virtual_id) {
             case VFS_VIRTUAL_PROC_UPTIME: {
                 extern u32 pit_ticks(void);
-                u32 uptime = pit_ticks() / 100;
-                count = append_u32(buf, sizeof(buf), 0, uptime);
-                count = append_text(buf, sizeof(buf), count, ".00 ");
-                count = append_u32(buf, sizeof(buf), count, uptime);
-                count = append_text(buf, sizeof(buf), count, ".00\n");
+                extern u32 pit_frequency(void);
+                u32 hz = pit_frequency();
+                if (hz == 0) hz = 100;
+                u32 ticks = pit_ticks();
+                u32 secs = ticks / hz;
+                u32 centisecs = (ticks % hz) * 100 / hz;
+                count = append_u32(buf, sizeof(buf), 0, secs);
+                count = append_text(buf, sizeof(buf), count, ".");
+                if (centisecs < 10) count = append_text(buf, sizeof(buf), count, "0");
+                count = append_u32(buf, sizeof(buf), count, centisecs);
+                count = append_text(buf, sizeof(buf), count, " ");
+                count = append_u32(buf, sizeof(buf), count, secs);
+                count = append_text(buf, sizeof(buf), count, ".");
+                if (centisecs < 10) count = append_text(buf, sizeof(buf), count, "0");
+                count = append_u32(buf, sizeof(buf), count, centisecs);
+                count = append_text(buf, sizeof(buf), count, "\n");
+                break;
+            }
+            case VFS_VIRTUAL_PROC_LOADAVG: {
+                int total = task_count_total();
+                int runnable = task_count_runnable();
+                int last_pid = 1;
+                {
+                    extern int task_active_slot_index(void);
+                    int idx = task_active_slot_index();
+                    if (idx >= 0) {
+                        extern int task_slot_pid(int);
+                        last_pid = task_slot_pid(idx);
+                        if (last_pid < 1) last_pid = 1;
+                    }
+                }
+                count = append_text(buf, sizeof(buf), 0, "0.00 0.00 0.00 ");
+                count = append_u32(buf, sizeof(buf), count, runnable);
+                count = append_text(buf, sizeof(buf), count, "/");
+                count = append_u32(buf, sizeof(buf), count, total);
+                count = append_text(buf, sizeof(buf), count, " ");
+                count = append_u32(buf, sizeof(buf), count, last_pid);
+                count = append_text(buf, sizeof(buf), count, "\n");
                 break;
             }
             case VFS_VIRTUAL_PROC_MEMINFO: {
-                extern memory_stats_t memory_stats(void);
-                memory_stats_t stats = memory_stats();
-                count = append_text(buf, sizeof(buf), 0, "MemTotal: ");
-                count = append_u32(buf, sizeof(buf), count, (u32)(stats.heap_used + stats.heap_free) / 1024);
-                count = append_text(buf, sizeof(buf), count, " kB\nMemFree: ");
-                count = append_u32(buf, sizeof(buf), count, (u32)stats.heap_free / 1024);
-                count = append_text(buf, sizeof(buf), count, " kB\n");
+                extern u32 frame_total(void);
+                extern u32 frame_free_count(void);
+                u32 total_frames = frame_total();
+                u32 free_frames = frame_free_count();
+                u32 mem_total_kb = total_frames * 4;
+                u32 mem_free_kb = free_frames * 4;
+                count = append_text(buf, sizeof(buf), 0, "MemTotal:       ");
+                count = append_u32(buf, sizeof(buf), count, mem_total_kb);
+                count = append_text(buf, sizeof(buf), count, " kB\nMemFree:        ");
+                count = append_u32(buf, sizeof(buf), count, mem_free_kb);
+                count = append_text(buf, sizeof(buf), count, " kB\nMemAvailable:   ");
+                count = append_u32(buf, sizeof(buf), count, mem_free_kb > 1024 ? mem_free_kb : 0);
+                count = append_text(buf, sizeof(buf), count, " kB\nBuffers:        0 kB\nCached:         0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\n");
+                break;
+            }
+            case VFS_VIRTUAL_PROC_CPUINFO: {
+                const cpu_info_t *cpu = cpu_get_info();
+                if (!cpu) {
+                    return 0;
+                }
+                count = append_text(buf, sizeof(buf), 0, "processor\t: 0\n");
+                count = append_text(buf, sizeof(buf), count, "vendor_id\t: ");
+                count = append_text(buf, sizeof(buf), count, cpu->vendor);
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "cpu family\t: ");
+                count = append_u32(buf, sizeof(buf), count, cpu->family);
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "model\t\t: ");
+                count = append_u32(buf, sizeof(buf), count, cpu->model);
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "model name\t: ");
+                if (cpu->brand_string_valid) {
+                    count = append_text(buf, sizeof(buf), count, cpu->brand);
+                } else {
+                    count = append_text(buf, sizeof(buf), count, cpu->vendor);
+                    count = append_text(buf, sizeof(buf), count, " CPU");
+                }
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "stepping\t: ");
+                count = append_u32(buf, sizeof(buf), count, cpu->stepping);
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "cpu MHz\t\t: 0.000\n");
+                if (cpu->cache_size_kb) {
+                    count = append_text(buf, sizeof(buf), count, "cache size\t: ");
+                    count = append_u32(buf, sizeof(buf), count, cpu->cache_size_kb);
+                    count = append_text(buf, sizeof(buf), count, " KB\n");
+                }
+                count = append_text(buf, sizeof(buf), count,
+                    "physical id\t: 0\n"
+                    "siblings\t: 1\n"
+                    "core id\t\t: 0\n"
+                    "cpu cores\t: 1\n"
+                    "apicid\t\t: 0\n"
+                    "initial apicid\t: 0\n"
+                    "fpu\t\t: ");
+                count = append_text(buf, sizeof(buf), count,
+                    (cpu->features_edx & CPUID_FEATURE_EDX_FPU) ? "yes" : "no");
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "fpu_exception\t: ");
+                count = append_text(buf, sizeof(buf), count,
+                    (cpu->features_edx & CPUID_FEATURE_EDX_FPU) ? "yes" : "no");
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "cpuid level\t: ");
+                count = append_u32(buf, sizeof(buf), count, cpu->max_leaf);
+                count = append_text(buf, sizeof(buf), count, "\n");
+                count = append_text(buf, sizeof(buf), count, "wp\t\t: yes\n");
+                {
+                    static const struct {
+                        u32 reg_idx;  /* 0 = EDX, 1 = ECX */
+                        u32 bit;
+                        const char *name;
+                    } flag_map[] = {
+                        {0, 0,  "fpu"},    {0, 1,  "vme"},
+                        {0, 2,  "de"},     {0, 3,  "pse"},
+                        {0, 4,  "tsc"},    {0, 5,  "msr"},
+                        {0, 6,  "pae"},    {0, 7,  "mce"},
+                        {0, 8,  "cx8"},    {0, 9,  "apic"},
+                        {0, 11, "sep"},    {0, 12, "mtrr"},
+                        {0, 13, "pge"},    {0, 14, "mca"},
+                        {0, 15, "cmov"},   {0, 16, "pat"},
+                        {0, 17, "pse36"},  {0, 19, "clflush"},
+                        {0, 21, "dtes"},   {0, 22, "acpi"},
+                        {0, 23, "mmx"},    {0, 24, "fxsr"},
+                        {0, 25, "sse"},    {0, 26, "sse2"},
+                        {0, 27, "ss"},     {0, 28, "ht"},
+                        {0, 29, "tm"},     {0, 31, "pbe"},
+                        {1, 0,  "pni"},    {1, 1,  "pclmulqdq"},
+                        {1, 2,  "dtes64"}, {1, 3,  "monitor"},
+                        {1, 4,  "ds_cpl"}, {1, 5,  "vmx"},
+                        {1, 6,  "smx"},    {1, 7,  "est"},
+                        {1, 8,  "tm2"},    {1, 9,  "ssse3"},
+                        {1, 12, "fma"},    {1, 13, "cx16"},
+                        {1, 14, "xtpr"},   {1, 15, "pdcm"},
+                        {1, 17, "pcid"},   {1, 18, "dca"},
+                        {1, 19, "sse4_1"},{1, 20, "sse4_2"},
+                        {1, 21, "x2apic"},{1, 22, "movbe"},
+                        {1, 23, "popcnt"},{1, 24, "tsc_deadline_timer"},
+                        {1, 25, "aes"},   {1, 26, "xsave"},
+                        {1, 28, "avx"},   {1, 29, "f16c"},
+                        {1, 30, "rdrand"},{1, 31, "hypervisor"},
+                    };
+                    count = append_text(buf, sizeof(buf), count, "flags\t\t:");
+                    for (size_t i = 0; i < sizeof(flag_map) / sizeof(flag_map[0]); i++) {
+                        u32 reg_val = flag_map[i].reg_idx ? cpu->features_ecx : cpu->features_edx;
+                        if (reg_val & (1u << flag_map[i].bit)) {
+                            count = append_text(buf, sizeof(buf), count, " ");
+                            count = append_text(buf, sizeof(buf), count, flag_map[i].name);
+                        }
+                    }
+                    count = append_text(buf, sizeof(buf), count, "\n");
+                }
+                count = append_text(buf, sizeof(buf), count, "bogomips\t: 0.00\n");
                 break;
             }
             default:

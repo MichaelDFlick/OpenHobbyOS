@@ -53,12 +53,6 @@ static void term_resp_queue_char(char ch) {
     }
 }
 
-static void term_resp_queue_string(const char *str) {
-    while (*str) {
-        term_resp_queue_char(*str++);
-    }
-}
-
 int console_term_resp_available(void) {
     return term_resp_head != term_resp_tail ? 1 : 0;
 }
@@ -157,8 +151,82 @@ static const u32 console_ansi_colours[16] = {
     0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,
 };
 
+static u16 ttf_be16(const u8 *p) {
+    return (u16)((u16)p[0] << 8) | (u16)p[1];
+}
+
+static u32 ttf_be32(const u8 *p) {
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | (u32)p[3];
+}
+
 void console_load_ttf(void) {
-    console_write("[fb] TTF font loading not available\n");
+    const initrd_file_t *file = initrd_find("/fonts/Monospace.ttf");
+    if (!file) {
+        console_printf("[fb] TTF font '/fonts/Monospace.ttf' not found, using built-in %ux%u\n",
+                       CONSOLE_FONT_WIDTH, CONSOLE_FONT_HEIGHT);
+        return;
+    }
+    const u8 *d = file->data;
+    u32 sz = file->size;
+    if (sz < 12) { console_write("[fb] TTF file too small\n"); return; }
+
+    u32 sfv = ttf_be32(d);
+    if (sfv != 0x00010000 && sfv != 0x4F54544F) {
+        console_printf("[fb] Unknown TTF version: 0x%08x\n", (unsigned int)sfv);
+        return;
+    }
+
+    u16 nt = ttf_be16(d + 4);
+    u16 upem = 0, asc = 0, dsc = 0;
+    char fname[128] = {0};
+    const u8 *tbl = d + 12;
+
+    for (u16 i = 0; i < nt && i < 100; i++) {
+        const u8 *e = tbl + i * 16;
+        u32 tag = ttf_be32(e);
+        u32 off = ttf_be32(e + 8);
+        u32 len = ttf_be32(e + 12);
+        if (off + len > sz) continue;
+
+        if (tag == 0x68656164 && len >= 54) /* 'head' */
+            upem = ttf_be16(d + off + 18);
+        else if (tag == 0x68686561 && len >= 36) /* 'hhea' */
+            { asc = ttf_be16(d + off + 4); dsc = ttf_be16(d + off + 6); }
+        else if (tag == 0x6E616D65 && len >= 6) { /* 'name' */
+            u16 nc = ttf_be16(d + off + 2);
+            u16 sto = ttf_be16(d + off + 4);
+            for (u16 ni = 0; ni < nc && ni < 50; ni++) {
+                const u8 *nr = d + off + 6 + ni * 12;
+                u16 pid = ttf_be16(nr), nid = ttf_be16(nr + 6);
+                u16 nl = ttf_be16(nr + 8), no = ttf_be16(nr + 10);
+                if (nid != 1) continue;
+                u32 so = off + sto + no;
+                if (so + nl > sz) continue;
+                if (pid == 3) { /* Windows Unicode */
+                    unsigned int fi = 0;
+                    for (u16 si = 0; si + 1 < nl && fi < sizeof(fname) - 1; si += 2) {
+                        u16 uc = ttf_be16(d + so + si);
+                        if (uc < 128) fname[fi++] = (char)uc;
+                    }
+                    fname[fi] = '\0';
+                } else if (pid == 1) { /* Mac Roman */
+                    unsigned int cl = nl < sizeof(fname) - 1 ? nl : sizeof(fname) - 1;
+                    memcpy(fname, d + so, cl); fname[cl] = '\0';
+                }
+            }
+        }
+    }
+
+    if (upem == 0) {
+        console_printf("[fb] TTF '%s': no head table\n", file->name);
+        return;
+    }
+
+    console_printf("[fb] TTF font: %s (%ux%u upem=%u asc=%u dsc=%d) %u glyphs read, using built-in bitmap\n",
+                   fname[0] ? fname : "Monospace",
+                   CONSOLE_FONT_WIDTH, CONSOLE_FONT_HEIGHT,
+                   (unsigned int)upem, (unsigned int)asc, (i16)dsc,
+                   CONSOLE_FONT_GLYPHS);
 }
 
 static int console_draw_cb(struct tsm_screen *con, uint64_t id,
@@ -167,7 +235,7 @@ static int console_draw_cb(struct tsm_screen *con, uint64_t id,
                            unsigned int posx, unsigned int posy,
                            const struct tsm_screen_attr *attr,
                            tsm_age_t age, void *data) {
-    (void)con; (void)id; (void)age; (void)data;
+    (void)con; (void)id; (void)width; (void)age; (void)data;
     if (!fb.available) return 0;
 
     unsigned int font_w = FB_FONT_W;
@@ -214,13 +282,6 @@ static int console_draw_cb(struct tsm_screen *con, uint64_t id,
         (bg_col >> 16) & 0xFF, (bg_col >> 8) & 0xFF, bg_col & 0xFF);
 
     unsigned int top_margin = (font_h - font_w) / 2u;
-
-    u8 fg_r = (fg_col >> 16) & 0xFF;
-    u8 fg_g = (fg_col >> 8) & 0xFF;
-    u8 fg_b = fg_col & 0xFF;
-    u8 bg_r = (bg_col >> 16) & 0xFF;
-    u8 bg_g = (bg_col >> 8) & 0xFF;
-    u8 bg_b = bg_col & 0xFF;
 
     for (unsigned int row = 0; row < font_h; ++row) {
         unsigned char font_byte;
@@ -321,6 +382,10 @@ void console_activate(void) {
         tsm_scr = NULL;
         return;
     }
+
+    /* Explicitly clear the entire framebuffer to black before drawing anything.
+     * This ensures no bootloader splash or VGA memory artifacts remain. */
+    memset((void *)fb.framebuffer, 0, (size_t)fb.pitch * (size_t)fb.height);
 
     tsm_screen_resize(tsm_scr, cols, rows);
     tsm_screen_set_max_sb(tsm_scr, 5000);

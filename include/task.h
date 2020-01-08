@@ -175,6 +175,8 @@ bool path_is_in_tmp(const char *path);
 /* Task slot access (for thread system) */
 int task_slot_pid(int index);
 bool task_slot_valid(int index);
+int task_count_total(void);
+int task_count_runnable(void);
 u32 task_slot_page_dir_phys(int index);
 u32 task_slot_tls_vaddr(int index);
 void *task_slot_page_dir(int index);

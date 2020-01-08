@@ -794,6 +794,68 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
         return;
     }
 
+    /*
+     * User stack grows down through kernel identity-mapped pages.
+     * When a user access hits a present-but-supervisor-only page
+     * within the user stack range, allocate a fresh page and map
+     * it with user permission so the stack can grow.
+     *
+     * IMPORTANT: If the PDE lacks PTE_ALLOCATED this is a SHARED
+     * kernel identity-mapped page table.  We must create a private
+     * copy (like the NULL-page fix does) so that fork's COW
+     * mechanism handles these stack pages correctly.  Without this,
+     * parent and child share the same physical stack pages and
+     * scheduler interleaving corrupts gosh's stack.
+     */
+    if (present && user && !reserved && virt_addr >= USER_BASE &&
+        virt_addr < USER_STACK_TOP) {
+        u32 pd_idx = virt_to_pd_index(virt_addr);
+        u32 pt_idx = virt_to_pt_index(virt_addr);
+
+        if (pd->entries[pd_idx] & PTE_PRESENT) {
+            if (!(pd->entries[pd_idx] & PTE_ALLOCATED)) {
+                /* Shared kernel identity-mapped PDE — make a private copy */
+                u32 old_pt_phys = entry_get_phys(pd->entries[pd_idx]);
+                page_table_t *old_pt = ptable_ptr(old_pt_phys);
+
+                u32 new_pt_phys = frame_alloc();
+                if (!new_pt_phys) goto unhandled;
+                page_table_t *new_pt = ptable_ptr(new_pt_phys);
+                memcpy(new_pt, old_pt, sizeof(page_table_t));
+
+                u32 new_phys = frame_alloc();
+                if (!new_phys) { frame_free(new_pt_phys); goto unhandled; }
+                new_pt->entries[pt_idx] = entry_create(new_phys,
+                    PTE_PRESENT | PTE_RW | PTE_USER | PTE_ALLOCATED);
+
+                pd->entries[pd_idx] = entry_create(new_pt_phys,
+                    PTE_PRESENT | PTE_RW | PTE_ALLOCATED | PTE_USER);
+
+                u32 page_va = virt_addr & PAGE_MASK;
+                paging_flush_tlb();
+                memset((void *)(uintptr_t)page_va, 0, PAGE_SIZE);
+                return;
+            }
+
+            /* PDE already private — just replace the one PTE */
+            u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
+            page_table_t *pt = ptable_ptr(pt_phys);
+            u32 pte = pt->entries[pt_idx];
+
+            if ((pte & PTE_PRESENT) && !(pte & PTE_USER)) {
+                u32 new_phys = frame_alloc();
+                if (new_phys) {
+                    u32 page_va = virt_addr & PAGE_MASK;
+                    pt->entries[pt_idx] = entry_create(new_phys,
+                        PTE_PRESENT | PTE_RW | PTE_USER | PTE_ALLOCATED);
+                    paging_invalidate_tlb(virt_addr);
+                    memset((void *)(uintptr_t)page_va, 0, PAGE_SIZE);
+                    return;
+                }
+            }
+        }
+    }
+
 unhandled:
     /* Handle demand-zero paging */
     if (!present && user && virt_addr < KERNEL_VIRTUAL_BASE) {
@@ -1046,8 +1108,14 @@ void paging_init(const multiboot_info_t *mbi, u32 total_memory_bytes, u32 kernel
         pd->entries[KERNEL_PD_INDEX + pde] = pt_phys | PTE_PRESENT | PTE_RW;
     }
 
-    /* 
+    /*
      * Identity-map the framebuffer so console writes don't page-fault.
+     *
+     * IMPORTANT: We ALWAYS allocate a new page table for the framebuffer PDE,
+     * even if the PDE already exists from the identity+higher-half mapping loop
+     * above. The existing PDE may be shared with an identity-mapped PDE (via
+     * KERNEL_PD_INDEX + pde), and modifying its PTEs would corrupt the identity
+     * mapping for that 4MB window. A dedicated page table avoids this.
      */
     if (mbi->flags & MULTIBOOT_FLAG_FRAMEBUFFER) {
         u64 fb_phys = mbi->framebuffer_addr;
@@ -1056,20 +1124,23 @@ void paging_init(const multiboot_info_t *mbi, u32 total_memory_bytes, u32 kernel
             u32 fb_size = mbi->framebuffer_pitch * mbi->framebuffer_height;
             if (fb_size > 0) {
                 fb_size = (fb_size + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+                u32 last_fb_pde = 0xFFFFFFFF;
+                u32 fb_pt_phys = 0;
                 for (u32 offset = 0; offset < fb_size; offset += PAGE_SIZE) {
                     u32 phys = fb_phys32 + offset;
                     u32 pde_idx = phys >> 22;
                     u32 pte_idx = (phys >> 12) & 0x3FF;
 
-                    if (!(pd->entries[pde_idx] & PTE_PRESENT)) {
-                        u32 fb_pt_phys = frame_alloc();
+                    if (pde_idx != last_fb_pde) {
+                        fb_pt_phys = frame_alloc();
                         if (!fb_pt_phys) panic("Failed to allocate FB page table");
                         page_table_t *fb_pt = (page_table_t *)(uintptr_t)fb_pt_phys;
                         memset(fb_pt, 0, sizeof(page_table_t));
                         pd->entries[pde_idx] = fb_pt_phys | PTE_PRESENT | PTE_RW;
+                        last_fb_pde = pde_idx;
                     }
 
-                    page_table_t *pt = (page_table_t *)(uintptr_t)(pd->entries[pde_idx] & 0xFFFFF000);
+                    page_table_t *pt = (page_table_t *)(uintptr_t)fb_pt_phys;
                     pt->entries[pte_idx] = phys | PTE_PRESENT | PTE_RW;
                 }
             }

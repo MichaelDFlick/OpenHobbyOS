@@ -238,6 +238,22 @@ bool task_slot_valid(int index) {
     return task_slot_at(index) != NULL;
 }
 
+int task_count_total(void) {
+    int count = 0;
+    for (int i = 0; i < TASK_MAX_SLOTS; i++) {
+        if (task_slots[i].used) count++;
+    }
+    return count;
+}
+
+int task_count_runnable(void) {
+    int count = 0;
+    for (int i = 0; i < TASK_MAX_SLOTS; i++) {
+        if (task_slots[i].used && task_slots[i].status == TASK_SLOT_RUNNABLE) count++;
+    }
+    return count;
+}
+
 bool task_is_thread(int slot_index) {
     task_slot_t *s = task_slot_at(slot_index);
     return s && s->is_thread;

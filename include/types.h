@@ -22,7 +22,9 @@ typedef _Bool bool;
 #define __bool_true_false_are_defined 1
 #endif
 
+#ifndef NULL
 #define NULL ((void *)0)
+#endif
 
 #define PACKED __attribute__((packed))
 #define NORETURN __attribute__((noreturn))
