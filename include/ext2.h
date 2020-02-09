@@ -121,6 +121,7 @@ void ext2_unmount(struct ext2_fs *fs);
 bool ext2_is_valid(u32 blkdev_id, u32 partition_start);
 
 u32 ext2_find_inode(struct ext2_fs *fs, const char *path);
+u32 ext2_dir_lookup(struct ext2_fs *fs, struct ext2_inode *dir_inode, const char *name);
 bool ext2_read_inode(struct ext2_fs *fs, u32 inode_num, struct ext2_inode *inode);
 bool ext2_read_block(struct ext2_fs *fs, u32 block_num, void *buffer);
 bool ext2_read_inode_block(struct ext2_fs *fs, struct ext2_inode *inode, u32 block_idx, void *buffer);
@@ -136,5 +137,21 @@ void ext2_close(ext2_file_t *file);
 u32 ext2_file_size(struct ext2_inode *inode);
 bool ext2_is_dir(struct ext2_inode *inode);
 bool ext2_is_reg(struct ext2_inode *inode);
+
+/* Write operations */
+bool ext2_write_block(struct ext2_fs *fs, u32 block_num, const void *buffer);
+bool ext2_write_inode(struct ext2_fs *fs, u32 inode_num, struct ext2_inode *inode);
+u32 ext2_alloc_block(struct ext2_fs *fs);
+u32 ext2_alloc_inode(struct ext2_fs *fs);
+bool ext2_free_block(struct ext2_fs *fs, u32 block_num);
+bool ext2_free_inode(struct ext2_fs *fs, u32 inode_num);
+bool ext2_format(u32 blkdev_id, u32 partition_start, u32 total_sectors);
+bool ext2_mkdir(struct ext2_fs *fs, u32 parent_inode, const char *name);
+bool ext2_create_file(struct ext2_fs *fs, u32 parent_inode, const char *name);
+bool ext2_write_file_data(struct ext2_fs *fs, u32 inode_num, const void *data, u32 size);
+bool ext2_mkdir_recursive(struct ext2_fs *fs, const char *path);
+u32 ext2_create_file_by_path(struct ext2_fs *fs, const char *path);
+bool ext2_sync_super(struct ext2_fs *fs);
+bool ext2_sync_bgdt(struct ext2_fs *fs);
 
 #endif

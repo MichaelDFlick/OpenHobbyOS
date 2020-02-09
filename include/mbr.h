@@ -36,5 +36,6 @@ typedef struct {
 
 bool mbr_read(u32 blkdev_id, mbr_partition_info_t *partitions);
 bool mbr_is_valid(u32 blkdev_id);
+bool mbr_write(u32 blkdev_id, const mbr_partition_t *partitions);
 
 #endif

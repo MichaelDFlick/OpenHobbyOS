@@ -41,6 +41,19 @@ bool mbr_read(u32 blkdev_id, mbr_partition_info_t *partitions) {
     return true;
 }
 
+bool mbr_write(u32 blkdev_id, const mbr_partition_t *partitions) {
+    if (!blkdev_present(blkdev_id) || !partitions) {
+        return false;
+    }
+
+    mbr_t mbr;
+    memset(&mbr, 0, sizeof(mbr));
+    mbr.signature = MBR_BOOT_SIGNATURE;
+    memcpy(mbr.partitions, partitions, sizeof(mbr_partition_t) * MBR_PARTITION_COUNT);
+
+    return blkdev_write(blkdev_id, 0, 1, &mbr) == 0;
+}
+
 bool mbr_is_valid(u32 blkdev_id) {
     if (!blkdev_present(blkdev_id)) {
         return false;
