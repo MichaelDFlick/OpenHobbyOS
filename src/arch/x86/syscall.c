@@ -1,9 +1,11 @@
 #include "syscall.h"
 
 #include "abi/linux.h"
+#include "blkdev.h"
 #include "console.h"
 #include "io.h"
 #include "keyboard.h"
+#include "mbr.h"
 #include "memory.h"
 #include "mouse.h"
 #include "serial.h"
@@ -619,7 +621,7 @@ static int sys_getdents64(registers_t *regs) {
 static int sys_clock_gettime(registers_t *regs) {
     struct linux_timespec spec;
 
-    if (regs->ebx != LINUX_CLOCK_REALTIME && regs->ebx != LINUX_CLOCK_MONOTONIC) {
+    if (regs->ebx != LINUX_CLOCK_REALTIME && regs->ebx != LINUX_CLOCK_MONOTONIC && regs->ebx != LINUX_CLOCK_BOOTTIME) {
         return LERR_INVAL;
     }
 
@@ -1524,6 +1526,227 @@ static int sys_oh_thread_self(registers_t *regs) {
     return state ? (int)state->pid : 0;
 }
 
+static int sys_blkread(registers_t *regs) {
+    u32 dev_id = regs->ebx;
+    u32 lba = regs->ecx;
+    void *buffer = (void *)(uintptr_t)regs->edx;
+    u32 sectors = regs->esi;
+
+    if (!blkdev_present(dev_id)) return LERR_INVAL;
+    if (!task_validate_user_range((uintptr_t)buffer, sectors * 512)) return LERR_FAULT;
+    if (blkdev_read(dev_id, lba, sectors, buffer) != 0) return -1;
+    return (int)(sectors * 512);
+}
+
+static int sys_blkwrite(registers_t *regs) {
+    u32 dev_id = regs->ebx;
+    u32 lba = regs->ecx;
+    const void *buffer = (const void *)(uintptr_t)regs->edx;
+    u32 sectors = regs->esi;
+
+    if (!blkdev_present(dev_id)) return LERR_INVAL;
+    if (!task_validate_user_range((uintptr_t)buffer, sectors * 512)) return LERR_FAULT;
+    if (blkdev_write(dev_id, lba, sectors, buffer) != 0) return -1;
+    return (int)(sectors * 512);
+}
+
+static int sys_install_op(registers_t *regs) {
+    u32 op = regs->ebx;
+    u32 arg1 = regs->ecx;
+    u32 arg2 = regs->edx;
+    void *buf = (void *)(uintptr_t)regs->esi;
+    u32 buf_size = regs->edi;
+
+    switch (op) {
+        case 0: { /* probe disks: write blkdev ids to buf */
+            u32 ids[BLKDEV_MAX_DEVICES];
+            u32 count = 0;
+            for (u32 i = 0; i < BLKDEV_MAX_DEVICES; i++) {
+                if (blkdev_present(i)) {
+                    ids[count++] = i;
+                }
+            }
+            u32 out_size = count * sizeof(u32);
+            if (buf && buf_size >= out_size) {
+                if (!task_copy_to_user(buf, ids, out_size)) return LERR_FAULT;
+            }
+            return (int)count;
+        }
+        case 1: { /* probe disk info */
+            u32 dev_id = arg1;
+            if (!blkdev_present(dev_id)) return LERR_INVAL;
+            u64 total = blkdev_total_sectors(dev_id);
+            if (buf && buf_size >= 8) {
+                if (!task_copy_to_user(buf, &total, 8)) return LERR_FAULT;
+            }
+            return (int)(total & 0x7FFFFFFF);
+        }
+        case 2: { /* mbr write */
+            u32 dev_id = arg1;
+            mbr_partition_t parts[4];
+            if (!buf || buf_size < sizeof(parts)) return LERR_INVAL;
+            if (!task_copy_from_user(parts, buf, sizeof(parts))) return LERR_FAULT;
+            return mbr_write(dev_id, parts) ? 0 : -1;
+        }
+        case 3: { /* format ext2 */
+            u32 dev_id = arg1;
+            u32 start = arg2;
+            u32 sectors = buf_size;
+            return ext2_format(dev_id, start, sectors) ? 0 : -1;
+        }
+        case 4: { /* write file to ext2 */
+            u32 dev_id = arg1;
+            u32 start = arg2;
+            struct ext2_fs fs;
+            if (!ext2_mount(dev_id, start, &fs)) return -1;
+            if (buf_size < 4) { ext2_unmount(&fs); return LERR_INVAL; }
+            char *path_data = kmalloc(buf_size);
+            if (!path_data) { ext2_unmount(&fs); return -1; }
+            if (!task_copy_from_user(path_data, buf, buf_size)) {
+                kfree(path_data); ext2_unmount(&fs); return LERR_FAULT;
+            }
+            const char *path = path_data;
+            u32 data_offset = 0;
+            for (u32 i = 0; i < buf_size; i++) {
+                if (path_data[i] == '\0') { data_offset = i + 1; break; }
+            }
+            if (data_offset == 0 || data_offset >= buf_size) {
+                kfree(path_data); ext2_unmount(&fs); return LERR_INVAL;
+            }
+            const char *filename = path;
+            if (filename[0] != '/') { kfree(path_data); ext2_unmount(&fs); return LERR_INVAL; }
+            char dir_path[256];
+            strncpy(dir_path, filename, 255);
+            dir_path[255] = '\0';
+            char *last_slash = strrchr(dir_path, '/');
+            const char *fname = NULL;
+            u32 parent = 2;
+            if (last_slash && last_slash != dir_path) {
+                *last_slash = '\0';
+                fname = last_slash + 1;
+                parent = ext2_find_inode(&fs, dir_path);
+                if (parent == 0) {
+                    ext2_mkdir_recursive(&fs, dir_path);
+                    parent = ext2_find_inode(&fs, dir_path);
+                    if (parent == 0) { kfree(path_data); ext2_unmount(&fs); return -1; }
+                }
+            } else if (last_slash == dir_path) {
+                fname = filename + 1;
+                parent = 2;
+            } else {
+                fname = filename;
+                parent = 2;
+            }
+
+            u32 child = 0;
+            {
+                struct ext2_inode pinode;
+                if (ext2_read_inode(&fs, parent, &pinode)) {
+                    child = ext2_dir_lookup(&fs, &pinode, fname);
+                }
+            }
+
+            if (child == 0) {
+                if (!ext2_create_file(&fs, parent, fname)) {
+                    kfree(path_data); ext2_unmount(&fs); return -1;
+                }
+                struct ext2_inode pinode;
+                if (ext2_read_inode(&fs, parent, &pinode)) {
+                    child = ext2_dir_lookup(&fs, &pinode, fname);
+                }
+            }
+
+            int result = -1;
+            if (child) {
+                u32 file_data_size = buf_size - data_offset;
+                if (ext2_write_file_data(&fs, child, path_data + data_offset, file_data_size)) {
+                    result = 0;
+                }
+            }
+
+            kfree(path_data);
+            ext2_unmount(&fs);
+            return result;
+        }
+        case 5: { /* mkdir on ext2 */
+            u32 dev_id = arg1;
+            u32 start = arg2;
+            struct ext2_fs fs;
+            if (!ext2_mount(dev_id, start, &fs)) return -1;
+            char path[256];
+            if (!buf || buf_size >= sizeof(path)) { ext2_unmount(&fs); return LERR_INVAL; }
+            if (!task_copy_from_user(path, buf, buf_size)) { ext2_unmount(&fs); return LERR_FAULT; }
+            path[buf_size] = '\0';
+            bool ok = ext2_mkdir_recursive(&fs, path);
+            ext2_unmount(&fs);
+            return ok ? 0 : -1;
+        }
+        case 6: { /* copy initrd to ext2 */
+            u32 dev_id = arg1;
+            u32 start = arg2;
+            struct ext2_fs fs;
+            if (!ext2_mount(dev_id, start, &fs)) return -1;
+            if (!initrd_ready()) { ext2_unmount(&fs); return -1; }
+
+            u32 count = initrd_count();
+            u32 copied = 0;
+            for (u32 i = 0; i < count; i++) {
+                const initrd_file_t *f = initrd_file_at(i);
+                if (!f) continue;
+
+                const char *ipath = f->name;
+                if (ipath[0] != '/') continue;
+
+                char dir_part[256];
+                strncpy(dir_part, ipath, 255);
+                dir_part[255] = '\0';
+                char *ls = strrchr(dir_part, '/');
+                const char *fname = NULL;
+                if (ls && ls != dir_part) {
+                    *ls = '\0';
+                    fname = ls + 1;
+                    ext2_mkdir_recursive(&fs, dir_part);
+                } else if (ls == dir_part) {
+                    fname = ipath + 1;
+                } else {
+                    fname = ipath;
+                }
+
+                u32 parent = 2;
+                if (ls && ls != dir_part) {
+                    parent = ext2_find_inode(&fs, dir_part);
+                    if (parent == 0) parent = 2;
+                }
+
+                {
+                    struct ext2_inode pinode;
+                    if (ext2_read_inode(&fs, parent, &pinode)) {
+                        u32 existing = ext2_dir_lookup(&fs, &pinode, fname);
+                        if (existing) continue;
+                    }
+                }
+
+                if (ext2_create_file(&fs, parent, fname)) {
+                    struct ext2_inode pinode;
+                    if (ext2_read_inode(&fs, parent, &pinode)) {
+                        u32 child = ext2_dir_lookup(&fs, &pinode, fname);
+                        if (child) {
+                            if (ext2_write_file_data(&fs, child, f->data, f->size)) {
+                                copied++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            ext2_unmount(&fs);
+            return (int)copied;
+        }
+        default:
+            return LERR_INVAL;
+    }
+}
+
 int syscall_dispatch(registers_t *regs) {
     u32 number = regs->eax;
     int result;
@@ -1759,6 +1982,15 @@ int syscall_dispatch(registers_t *regs) {
             break;
         case OHOS_SYS_THREAD_SELF:
             result = sys_oh_thread_self(regs);
+            break;
+        case OHOS_SYS_BLKREAD:
+            result = sys_blkread(regs);
+            break;
+        case OHOS_SYS_BLKWRITE:
+            result = sys_blkwrite(regs);
+            break;
+        case OHOS_SYS_INSTALL_OP:
+            result = sys_install_op(regs);
             break;
         default:
             result = LERR_INVAL;

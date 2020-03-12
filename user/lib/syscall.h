@@ -65,6 +65,9 @@ int sys_suspend(void);
 int sys_memstat(unsigned int buffer[5]);
 int sys_ticks(void);
 int sys_tickfreq(void);
+int sys_blkread(unsigned int dev_id, unsigned int lba, void *buffer, unsigned int sectors);
+int sys_blkwrite(unsigned int dev_id, unsigned int lba, const void *buffer, unsigned int sectors);
+int sys_install_op(unsigned int op, unsigned int arg1, unsigned int arg2, void *buf, unsigned int buf_size);
 
 #ifdef __cplusplus
 }

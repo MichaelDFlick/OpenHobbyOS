@@ -44,6 +44,15 @@ static int syscall4(int number, int arg1, int arg2, int arg3, int arg4) {
     return result;
 }
 
+static int syscall5(int number, int arg1, int arg2, int arg3, int arg4, int arg5) {
+    int result;
+    __asm__ volatile ("int $0x80"
+                      : "=a"(result)
+                      : "a"(number), "b"(arg1), "c"(arg2), "d"(arg3), "S"(arg4), "D"(arg5)
+                      : "memory");
+    return result;
+}
+
 static int syscall6(int number, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6) {
     int result;
     __asm__ volatile ("push %%ebp\n"
@@ -282,4 +291,16 @@ int sys_ticks(void) {
 
 int sys_tickfreq(void) {
     return syscall0(OHOS_SYS_TICKFREQ);
+}
+
+int sys_blkread(unsigned int dev_id, unsigned int lba, void *buffer, unsigned int sectors) {
+    return syscall4(OHOS_SYS_BLKREAD, (int)dev_id, (int)lba, (int)buffer, (int)sectors);
+}
+
+int sys_blkwrite(unsigned int dev_id, unsigned int lba, const void *buffer, unsigned int sectors) {
+    return syscall4(OHOS_SYS_BLKWRITE, (int)dev_id, (int)lba, (int)buffer, (int)sectors);
+}
+
+int sys_install_op(unsigned int op, unsigned int arg1, unsigned int arg2, void *buf, unsigned int buf_size) {
+    return syscall5(OHOS_SYS_INSTALL_OP, (int)op, (int)arg1, (int)arg2, (int)buf, (int)buf_size);
 }

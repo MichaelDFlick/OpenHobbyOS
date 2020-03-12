@@ -107,6 +107,9 @@
 #define OHOS_SYS_SETEGID        422
 #define OHOS_SYS_AUTH           423
 #define OHOS_SYS_CHMOD          424
+#define OHOS_SYS_BLKREAD        425
+#define OHOS_SYS_BLKWRITE       426
+#define OHOS_SYS_INSTALL_OP     427
 
 #define LINUX_AT_FDCWD (-100)
 
@@ -183,6 +186,7 @@ struct linux_pollfd {
 
 #define LINUX_CLOCK_REALTIME 0
 #define LINUX_CLOCK_MONOTONIC 1
+#define LINUX_CLOCK_BOOTTIME 7
 
 #define LINUX_MSG_PEEK     0x2
 #define LINUX_MSG_DONTWAIT 0x40
