@@ -3,6 +3,10 @@
 
 #include "abi/linux.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 unsigned int u_strlen(const char *text);
 int u_strcmp(const char *left, const char *right);
 int u_strncmp(const char *left, const char *right, unsigned int count);
@@ -23,5 +27,9 @@ void u_print_uname(const struct linux_utsname *name);
 const char *u_basename(const char *path);
 void u_print_stat(const char *label, const struct linux_stat64 *stat);
 unsigned int u_parse_uint(const char *text, int *ok);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

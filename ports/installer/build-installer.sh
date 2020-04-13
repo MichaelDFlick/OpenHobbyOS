@@ -10,22 +10,23 @@ BUILD_DIR=$(cd "$BUILD_DIR" && pwd)
 SYSROOT=$(cd "$SYSROOT" && pwd)
 
 TARGET=${TARGET:-i686-openhobbyos}
-CC="$ROOT/toolchain/bin/$TARGET-gcc"
+CXX="$ROOT/toolchain/bin/$TARGET-g++"
 OBJCOPY="$ROOT/toolchain/bin/$TARGET-objcopy"
 
-export PKG_CONFIG_LIBDIR="$SYSROOT/lib/pkgconfig"
-export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
-export PKG_CONFIG_PATH=""
-
-INCLUDES="-I$ROOT/user/lib -I$ROOT/user/lib/ohui -I$SYSROOT/include -I$SYSROOT/include/cairo -I$SYSROOT/include/freetype2 -I$SYSROOT/include/pixman-1 -I$SYSROOT/include/xnx"
-CFLAGS="--sysroot=$SYSROOT -O2 -ffreestanding -fno-pic -fno-pie $INCLUDES"
-LIBS="-L$SYSROOT/lib -lohui -lxnx -lcairo -lpixman-1 -lfreetype -lpng16 -lz -lm -lgcc"
+INCLUDES="-I$ROOT/user/lib -I$ROOT/include -I$ROOT/user/lib/ohui -I$SYSROOT/include"
+CXXFLAGS="--sysroot=$SYSROOT -O2 -ffreestanding -fno-pic -fno-pie -fno-exceptions -fno-rtti -std=c++11 $INCLUDES"
+LIBS="-L$SYSROOT/lib -lgcc"
 
 echo "[installer] Compiling..."
-$CC $CFLAGS -c "$ROOT/user/installer/installer.c" -o "$BUILD_DIR/installer.o"
+$CXX $CXXFLAGS -c "$ROOT/user/installer/installer.cpp" -o "$BUILD_DIR/installer.o"
 
 echo "[installer] Linking..."
-$CC $CFLAGS "$BUILD_DIR/installer.o" $LIBS \
+$CXX $CXXFLAGS \
+    "$BUILD_DIR/installer.o" \
+    "$ROOT/build/user/lib/start.o" \
+    "$ROOT/build/user/lib/syscall.o" \
+    "$ROOT/build/user/lib/runtime.o" \
+    $LIBS \
     -static -nostartfiles -Wl,-T,"$ROOT/user.ld" \
     -o "$BUILD_DIR/installer"
 
