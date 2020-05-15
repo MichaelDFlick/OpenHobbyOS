@@ -91,6 +91,10 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/installer::/bin/installer")
     fi
 
+    if [[ -f "$ROOT/build/ports/sysroot/bin/milkyway" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/milkyway::/bin/milkyway")
+    fi
+
     if [[ -f "$ROOT/build/ports/sysroot/bin/terminal" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/terminal::/bin/terminal")
     fi

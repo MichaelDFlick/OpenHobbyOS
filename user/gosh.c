@@ -24,20 +24,17 @@
 #define PATH_MAX    4096
 #endif
 #define HIST_MAX    16
-#define THEME_FILE  "/etc/shell-colors.jsonc"
 #define MAX(x,y)    ((x)>(y)?(x):(y))
 #define GOSH_ERR_PERM  (-1)
 #define GOSH_ERR_ACCES (-13)
 #define GOSH_ERR_NOTFOUND (-127)
 #define FONT_PATH   "/fonts/Monospace.ttf"
 #define FONT_SIZE   16
-#define TAB_WIDTH   4
-#define TERM_ROWS   10000
-#define TERM_COLS   256
+#define MAX(x,y)    ((x)>(y)?(x):(y))
+
 
 static int g_last_exit;
 static int g_exit_code;
-static int g_use_colors = 1;
 static int g_prompt_needs_spacing;
 static char g_cwd[PATH_MAX];
 static char **g_envp;
@@ -54,7 +51,6 @@ static cairo_t *g_cr;
 static cairo_font_face_t *g_font;
 static int g_font_w, g_font_h, g_font_ascent;
 static int g_win_w, g_win_h;
-static int g_vis_rows, g_vis_cols;
 
 static uint32_t *g_fb_map;
 static int g_fb_fd = -1;
@@ -63,32 +59,6 @@ static char g_font_data[FBUF_SIZE];
 #define PIXEL_W 800
 #define PIXEL_H 600
 static uint32_t g_pixels[PIXEL_W * PIXEL_H];
-
-static char g_term_buf[TERM_ROWS][TERM_COLS];
-static unsigned char g_term_attr[TERM_ROWS][TERM_COLS];
-static int g_term_fg;
-static int g_term_bg;
-static int g_term_row;
-static int g_term_col;
-static int g_term_count;
-
-static char g_input_buf[LINE_MAX];
-static int g_input_pos;
-static int g_input_cursor;
-
-static int g_dirty;
-
-static const double g_colors[][3] = {
-    {0.19, 0.20, 0.22}, {0.80, 0.20, 0.18}, {0.30, 0.72, 0.36},
-    {0.80, 0.62, 0.16}, {0.25, 0.46, 0.76}, {0.58, 0.29, 0.64},
-    {0.17, 0.60, 0.66}, {0.80, 0.80, 0.80},
-    {0.40, 0.42, 0.44}, {1.0, 0.33, 0.27}, {0.44, 0.88, 0.48},
-    {1.0, 0.80, 0.22}, {0.37, 0.62, 0.92}, {0.76, 0.40, 0.80},
-    {0.27, 0.74, 0.80}, {1.0, 1.0, 1.0},
-};
-
-struct gosh_theme { int user, host, path, symbol, error, success, default_c, warning, title; };
-static struct gosh_theme g_thm;
 
 static void pixel_fill(int x, int y, int w, int h, uint32_t color) {
     for (int row = y; row < y + h && row < g_win_h; row++) {
@@ -105,131 +75,10 @@ static void pixel_clear(uint32_t color) {
     for (unsigned int i = 0; i < n; i++) g_pixels[i] = color;
 }
 
-static void term_clear(void) {
-    g_term_count = g_term_row = g_term_col = 0;
-    g_term_fg = 15; g_term_bg = 0;
-    g_dirty = 1;
-}
 
-static void term_newline(void) {
-    g_term_row++; g_term_col = 0;
-    if (g_term_row >= TERM_ROWS) {
-        memmove(g_term_buf[0], g_term_buf[1], (TERM_ROWS - 1) * TERM_COLS);
-        memmove(g_term_attr[0], g_term_attr[1], (TERM_ROWS - 1) * TERM_COLS);
-        memset(g_term_buf[TERM_ROWS - 1], 0, TERM_COLS);
-        memset(g_term_attr[TERM_ROWS - 1], 0, TERM_COLS);
-        g_term_row = TERM_ROWS - 1;
-    }
-    if (g_term_row >= g_term_count) g_term_count = g_term_row + 1;
-}
 
-static void term_write(const char *data, int len) {
-    for (int i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)data[i];
-        if (c == '\n') { term_newline(); }
-        else if (c == '\r') { g_term_col = 0; }
-        else if (c == '\t') {
-            int next = (g_term_col + TAB_WIDTH) & ~(TAB_WIDTH - 1);
-            while (g_term_col < next && g_term_col < TERM_COLS - 1)
-                g_term_buf[g_term_row][g_term_col++] = ' ';
-        } else if (c == '\e') {
-            i++; if (i >= len) break;
-            if (data[i] == '[') {
-                i++; int params[8] = {0}, pc = 0;
-                while (i < len) {
-                    if (data[i] >= '0' && data[i] <= '9') params[pc] = params[pc] * 10 + (data[i] - '0');
-                    else if (data[i] == ';') { pc++; if (pc >= 8) break; }
-                    else if (data[i] == 'm') {
-                        for (int pi = 0; pi <= pc && pi < 8; pi++) {
-                            int p = params[pi];
-                            if (p == 0) { g_term_fg = 15; g_term_bg = 0; }
-                            else if (p == 1) { if (g_term_fg < 8) g_term_fg += 8; }
-                            else if (p == 22) { if (g_term_fg >= 8) g_term_fg -= 8; }
-                            else if (p >= 30 && p <= 37) g_term_fg = p - 30;
-                            else if (p >= 90 && p <= 97) g_term_fg = p - 90 + 8;
-                            else if (p >= 40 && p <= 47) g_term_bg = p - 40;
-                            else if (p >= 100 && p <= 107) g_term_bg = p - 100 + 8;
-                        }
-                        break;
-                    }
-                    else if (data[i] == 'J') { if (params[0] == 2) term_clear(); break; }
-                    else if (data[i] == 'K') {
-                        memset(g_term_buf[g_term_row] + g_term_col, 0, TERM_COLS - g_term_col);
-                        memset(g_term_attr[g_term_row] + g_term_col, 0, TERM_COLS - g_term_col);
-                        break;
-                    }
-                    else break;
-                    i++;
-                }
-            }
-        } else if (c >= 32) {
-            if (g_term_col < TERM_COLS - 1) {
-                g_term_buf[g_term_row][g_term_col] = (char)c;
-                g_term_attr[g_term_row][g_term_col] = (unsigned char)((g_term_bg << 4) | g_term_fg);
-                g_term_col++;
-            }
-        }
-    }
-    g_dirty = 1;
-}
-
-static int parse_json_int(const char *buf, const char *key, int fallback) {
-    const char *p = buf;
-    while (*p) {
-        const char *k = key, *scan = p;
-        while (*k && *scan && *scan == *k) { k++; scan++; }
-        if (!*k) {
-            while (*scan && *scan != ':') scan++;
-            if (*scan != ':') { p++; continue; }
-            scan++;
-            while (*scan && (*scan == ' ' || *scan == '\t')) scan++;
-            if (*scan == '"') scan++;
-            int val = 0;
-            while (*scan && *scan >= '0' && *scan <= '9') val = val * 10 + (*scan++ - '0');
-            return val;
-        }
-        p++;
-    }
-    return fallback;
-}
-
-static void load_theme(void) {
-    g_thm.user = 96; g_thm.host = 92; g_thm.path = 94; g_thm.symbol = 97;
-    g_thm.error = 91; g_thm.success = 92; g_thm.default_c = 97; g_thm.warning = 93; g_thm.title = 96;
-    int fd = sys_open(THEME_FILE, 0, 0); if (fd < 0) return;
-    char tbuf[2048]; int total = 0;
-    for (;;) { int n = sys_read(fd, tbuf + total, 1); if (n <= 0) break; total++; if (total >= (int)sizeof(tbuf)-1) break; }
-    sys_close(fd); tbuf[total] = '\0';
-    g_thm.user = parse_json_int(tbuf, "prompt_user", g_thm.user);
-    g_thm.host = parse_json_int(tbuf, "prompt_host", g_thm.host);
-    g_thm.path = parse_json_int(tbuf, "prompt_path", g_thm.path);
-    g_thm.symbol = parse_json_int(tbuf, "prompt_symbol", g_thm.symbol);
-    g_thm.error = parse_json_int(tbuf, "error", g_thm.error);
-    g_thm.success = parse_json_int(tbuf, "success", g_thm.success);
-    g_thm.default_c = parse_json_int(tbuf, "default", g_thm.default_c);
-    g_thm.warning = parse_json_int(tbuf, "warning", g_thm.warning);
-    g_thm.title = parse_json_int(tbuf, "title", g_thm.title);
-}
-
-static const char *env_get(const char *name) {
-    if (!g_envp) return 0;
-    unsigned int nlen = u_strlen(name);
-    for (int i = 0; g_envp[i]; i++)
-        if (u_strncmp(g_envp[i], name, nlen) == 0 && g_envp[i][nlen] == '=')
-            return g_envp[i] + nlen + 1;
-    return 0;
-}
-
-static void detect_color_support(void) {
-    const char *no_color = env_get("NO_COLOR");
-    g_use_colors = 1;
-    if (no_color && *no_color) { g_use_colors = 0; return; }
-    const char *term = env_get("TERM");
-    if (term && u_strcmp(term, "dumb") == 0) g_use_colors = 0;
-}
-
-static void write_ch(char ch) { term_write(&ch, 1); }
-static void write_str(const char *s) { term_write(s, (int)u_strlen(s)); }
+static void write_ch(char ch) { write(1, &ch, 1); }
+static void write_str(const char *s) { write(1, s, (int)u_strlen(s)); }
 
 struct gosh_fb_bitfield { uint32_t offset, length, msb_right; };
 struct gosh_fb_vinfo {
@@ -306,10 +155,6 @@ static int display_init(void) {
     g_font_w = (int)(te.x_advance + 0.5);
     if (g_font_w < 1) g_font_w = FONT_SIZE;
 
-    g_vis_rows = g_win_h / g_font_h;
-    g_vis_cols = g_win_w / g_font_w;
-
-    term_clear();
     return 0;
 }
 
@@ -327,100 +172,43 @@ static void fb_blit(void) {
     }
 }
 
-static void draw_prompt_line(int row, int *out_x) {
-    int x = 0;
-    int y = row * g_font_h;
 
+
+static const char *env_get(const char *name) {
+    if (!g_envp) return 0;
+    unsigned int nlen = u_strlen(name);
+    for (int i = 0; g_envp[i]; i++)
+        if (u_strncmp(g_envp[i], name, nlen) == 0 && g_envp[i][nlen] == '=')
+            return g_envp[i] + nlen + 1;
+    return 0;
+}
+
+static void show_prompt(void) {
+    char pbuf[512];
+    int pos = 0;
+    static const char RST[] = "\033[0m";
+    static const char RED[] = "\033[0;31m";
+    static const char GRN[] = "\033[1;32m";
+    static const char YLW[] = "\033[1;33m";
+    static const char BLU[] = "\033[1;34m";
+    static const char WHT[] = "\033[1;37m";
     if (g_last_exit != 0) {
-        char tmp[16];
-        snprintf(tmp, sizeof(tmp), "%d ", g_last_exit);
-        text_at(x, y, tmp, g_colors[1][0], g_colors[1][1], g_colors[1][2]);
-        x += (int)u_strlen(tmp) * g_font_w;
+        pos += snprintf(pbuf + pos, sizeof(pbuf) - pos, "%s%d ", RED, g_last_exit);
     }
-
     const char *user = g_logged_in && g_session_user[0] ? g_session_user : "root";
     const char *host = env_get("HOSTNAME");
     if (!host) host = "openhobby";
     int is_root = (u_strcmp(user, "root") == 0);
-
     if (!sys_getcwd(g_cwd, sizeof(g_cwd))) u_strcpy(g_cwd, "?");
     const char *cwd_short = g_cwd;
-    const char *slash = 0;
+    const char *slash = NULL;
     const char *p = g_cwd;
     while (*p) { if (*p == '/') slash = p; p++; }
     if (slash && slash != g_cwd) cwd_short = slash + 1;
-
-    char buf[256];
-    snprintf(buf, sizeof(buf), "%s@", user);
-    text_at(x, y, buf, g_colors[9][0], g_colors[9][1], g_colors[9][2]);
-    x += (int)u_strlen(buf) * g_font_w;
-
-    snprintf(buf, sizeof(buf), "%s:", host);
-    text_at(x, y, buf, g_colors[10][0], g_colors[10][1], g_colors[10][2]);
-    x += (int)u_strlen(buf) * g_font_w;
-
-    text_at(x, y, cwd_short, g_colors[12][0], g_colors[12][1], g_colors[12][2]);
-    x += (int)u_strlen(cwd_short) * g_font_w;
-
-    snprintf(buf, sizeof(buf), " %c ", is_root ? '#' : '$');
-    text_at(x, y, buf, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
-    x += (int)u_strlen(buf) * g_font_w;
-
-    int input_x = x;
-
-    for (int i = 0; i < g_input_pos; i++) {
-        char cb[2] = {g_input_buf[i], '\0'};
-        text_at(x, y, cb, g_colors[15][0], g_colors[15][1], g_colors[15][2]);
-        x += g_font_w;
-    }
-
-    int cursor_x = input_x + g_input_cursor * g_font_w;
-    pixel_fill(cursor_x, row * g_font_h, g_font_w, g_font_h, 0xCCCCCC);
-    {
-        char ch = g_input_cursor < g_input_pos ? g_input_buf[g_input_cursor] : ' ';
-        char cb[2] = {ch, '\0'};
-        text_at(cursor_x, y, cb, g_colors[0][0], g_colors[0][1], g_colors[0][2]);
-    }
-
-    if (out_x) *out_x = input_x;
-}
-
-static void display_update(void) {
-    pixel_clear(0x303136);
-
-    int term_rows = g_vis_rows - 1;
-    int start = g_term_count - term_rows;
-    if (start < 0) start = 0;
-
-    for (int i = start; i < g_term_count; i++) {
-        int draw_row = i - start + 1;
-        if (draw_row >= g_vis_rows) break;
-        int x = 0;
-        int y = draw_row * g_font_h;
-        for (int ci = 0; ci < TERM_COLS; ci++) {
-            unsigned char ch = (unsigned char)g_term_buf[i][ci];
-            if (ch == 0) break;
-            unsigned char attr = g_term_attr[i][ci];
-            int fg = attr & 0x0F;
-            if (fg > 15) fg = 15;
-            char buf[2] = {(char)ch, '\0'};
-            text_at(x, y, buf, g_colors[fg][0], g_colors[fg][1], g_colors[fg][2]);
-            x += g_font_w;
-        }
-    }
-
-    draw_prompt_line(0, NULL);
-
-    cairo_surface_flush(g_cs);
-    fb_blit();
-    g_dirty = 0;
-}
-
-static void show_prompt(void) { g_dirty = 1; }
-
-static void redraw_shell_line(const char *buf, int len, int cursor) {
-    memcpy(g_input_buf, buf, (size_t)len); g_input_buf[len] = '\0';
-    g_input_pos = len; g_input_cursor = cursor; g_dirty = 1;
+    pos += snprintf(pbuf + pos, sizeof(pbuf) - pos, "%s%s%s@%s%s%s:%s%s%s %s%s ",
+                    GRN, user, RST, YLW, host, RST, BLU, cwd_short, RST,
+                    is_root ? RED : WHT, is_root ? "#" : "$");
+    write(1, pbuf, pos);
 }
 
 static void hist_add(const char *line) {
@@ -490,7 +278,43 @@ static int is_builtin(const char *name) {
 }
 
 static void redraw_shell_adapter(const char *buf, int len, int cursor, void *ctx) {
-    (void)ctx; redraw_shell_line(buf, len, cursor);
+    (void)ctx;
+    char tmp[2048];
+    int ti = 0, plen;
+    static const char RST[] = "\033[0m";
+    static const char RED[] = "\033[0;31m";
+    static const char GRN[] = "\033[1;32m";
+    static const char YLW[] = "\033[1;33m";
+    static const char BLU[] = "\033[1;34m";
+    static const char WHT[] = "\033[1;37m";
+    tmp[ti++] = '\r';
+    if (g_last_exit != 0) {
+        plen = snprintf(tmp + ti, sizeof(tmp) - ti, "%s%d ", RED, g_last_exit);
+        if (plen > 0) ti += plen;
+    }
+    const char *user = g_logged_in && g_session_user[0] ? g_session_user : "root";
+    const char *host = env_get("HOSTNAME");
+    if (!host) host = "openhobby";
+    int is_root = (u_strcmp(user, "root") == 0);
+    if (!sys_getcwd(g_cwd, sizeof(g_cwd))) u_strcpy(g_cwd, "?");
+    const char *cwd_short = g_cwd;
+    const char *slash = NULL;
+    const char *p = g_cwd;
+    while (*p) { if (*p == '/') slash = p; p++; }
+    if (slash && slash != g_cwd) cwd_short = slash + 1;
+    plen = snprintf(tmp + ti, sizeof(tmp) - ti, "%s%s%s@%s%s%s:%s%s%s %s%s ",
+                    GRN, user, RST, YLW, host, RST, BLU, cwd_short, RST,
+                    is_root ? RED : WHT, is_root ? "#" : "$");
+    if (plen > 0) ti += plen;
+    for (int i = 0; i < len && ti < (int)sizeof(tmp) - 16; i++) tmp[ti++] = buf[i];
+    tmp[ti++] = RST[0]; tmp[ti++] = RST[1]; tmp[ti++] = RST[2]; tmp[ti++] = RST[3];
+    int back = len - cursor;
+    if (back > 0) {
+        tmp[ti++] = '\033'; tmp[ti++] = '[';
+        if (back >= 10) { tmp[ti++] = (char)('0' + back / 10); back %= 10; }
+        tmp[ti++] = (char)('0' + back); tmp[ti++] = 'D';
+    }
+    write(1, tmp, ti);
 }
 
 static int read_line_common(char *buf, int max, int use_history,
@@ -500,7 +324,6 @@ static int read_line_common(char *buf, int max, int use_history,
     if (!buf || max < 2) return -1;
     buf[0] = '\0'; current_line_backup[0] = '\0';
     redraw(buf, pos, cursor, redraw_ctx);
-    display_update();
     int esc_state = 0;
     for (;;) {
         struct pollfd pfd;
@@ -526,7 +349,6 @@ static int read_line_common(char *buf, int max, int use_history,
                             u_strcpy(buf, g_history[history_index % HIST_MAX]);
                             pos = (int)u_strlen(buf); cursor = pos;
                             redraw(buf, pos, cursor, redraw_ctx);
-                            display_update();
                         } continue;
                     }
                     if (ch == 'B' && use_history) {
@@ -538,13 +360,12 @@ static int read_line_common(char *buf, int max, int use_history,
                             } else { u_strcpy(buf, g_history[history_index % HIST_MAX]); }
                             pos = (int)u_strlen(buf); cursor = pos;
                             redraw(buf, pos, cursor, redraw_ctx);
-                            display_update();
                         } continue;
                     }
-                    if (ch == 'C') { if (cursor < pos) { cursor++; redraw(buf, pos, cursor, redraw_ctx); display_update(); } continue; }
-                    if (ch == 'D') { if (cursor > 0) { cursor--; redraw(buf, pos, cursor, redraw_ctx); display_update(); } continue; }
-                    if (ch == 'H' || ch == '1') { if (ch == '1') esc_state = 3; else { cursor = 0; redraw(buf, pos, cursor, redraw_ctx); display_update(); } continue; }
-                    if (ch == 'F' || ch == '4') { if (ch == '4') esc_state = 3; else { cursor = pos; redraw(buf, pos, cursor, redraw_ctx); display_update(); } continue; }
+                    if (ch == 'C') { if (cursor < pos) { cursor++; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+                    if (ch == 'D') { if (cursor > 0) { cursor--; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+                    if (ch == 'H' || ch == '1') { if (ch == '1') esc_state = 3; else { cursor = 0; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+                    if (ch == 'F' || ch == '4') { if (ch == '4') esc_state = 3; else { cursor = pos; redraw(buf, pos, cursor, redraw_ctx); } continue; }
                     if (ch == '3') { esc_state = 3; continue; }
                     continue;
                 }
@@ -555,21 +376,20 @@ static int read_line_common(char *buf, int max, int use_history,
                             for (int i = cursor; i < pos - 1; ++i) buf[i] = buf[i + 1];
                             pos--; buf[pos] = '\0';
                             redraw(buf, pos, cursor, redraw_ctx);
-                            display_update();
-                        }
+                        } continue;
                     } continue;
                 }
                 if (ch == '\n' || ch == '\r') {
-                    term_newline(); buf[pos] = '\0';
+                    buf[pos] = '\0';
+                    write(1, "\n", 1);
                     if (use_history) hist_add(buf);
-                    display_update(); return pos;
+                    return pos;
                 }
                 if (ch == 127 || ch == 8) {
                     if (cursor > 0) {
                         for (int i = cursor - 1; i < pos - 1; ++i) buf[i] = buf[i + 1];
                         cursor--; pos--; buf[pos] = '\0';
                         redraw(buf, pos, cursor, redraw_ctx);
-                        display_update();
                     } continue;
                 }
                 if (ch >= 32) {
@@ -580,11 +400,9 @@ static int read_line_common(char *buf, int max, int use_history,
                         buf[cursor] = (char)ch; pos++; cursor++; buf[pos] = '\0';
                     }
                     redraw(buf, pos, cursor, redraw_ctx);
-                    display_update();
                 }
             }
         } else {
-            if (g_dirty) display_update();
             sys_sched_yield();
         }
     }
@@ -638,7 +456,7 @@ static int builtin_help(int argc, const char **argv) {
     return 0;
 }
 
-static int builtin_clear(int argc, const char **argv) { (void)argc; (void)argv; term_clear(); g_prompt_needs_spacing = 0; return 0; }
+static int builtin_clear(int argc, const char **argv) { (void)argc; (void)argv; write(1, "\033[2J\033[H", 7); g_prompt_needs_spacing = 0; return 0; }
 static int builtin_pwd(int argc, const char **argv) { (void)argc; (void)argv; if (sys_getcwd(g_cwd, sizeof(g_cwd))) { write_str(g_cwd); write_ch('\n'); } return 0; }
 
 static int builtin_echo(int argc, const char **argv) {
@@ -720,12 +538,10 @@ static int run_builtin(const char *name, int argc, const char **argv) {
     return -1;
 }
 
-static int execute_external_captured(const char *path, const char **argv) {
-    int p[2]; if (sys_pipe(p) < 0) { write_str("gosh: pipe failed\n"); return 1; }
+static int execute_external_direct(const char *path, const char **argv) {
     int pid = sys_fork();
-    if (pid < 0) { sys_close(p[0]); sys_close(p[1]); write_str("gosh: fork failed\n"); return 1; }
+    if (pid < 0) { write_str("gosh: fork failed\n"); return 1; }
     if (pid == 0) {
-        sys_close(p[0]); sys_dup2(p[1], 1); sys_dup2(p[1], 2); sys_close(p[1]);
         char *exec_argv[64]; int ac = 0;
         while (argv[ac] && ac < 63) { exec_argv[ac] = (char *)argv[ac]; ac++; }
         exec_argv[ac] = NULL;
@@ -737,20 +553,13 @@ static int execute_external_captured(const char *path, const char **argv) {
         sys_execve(path, exec_argv, (char **)new_envp);
         write(2, "gosh: exec failed\n", 18); _exit(127);
     }
-    sys_close(p[1]);
-    char buf[4096];
+    int status = 0;
     for (;;) {
-        struct pollfd pf; pf.fd = p[0]; pf.events = POLLIN; pf.revents = 0;
-        if (poll(&pf, 1, 100) <= 0) {
-            int status = 0;
-            if (sys_waitpid(pid, &status, WNOHANG) == pid) { sys_close(p[0]); return status; }
-            if (g_dirty) display_update(); continue;
-        }
-        int n = (int)read(p[0], buf, sizeof(buf));
-        if (n <= 0) break;
-        term_write(buf, n); display_update();
+        int ret = sys_waitpid(pid, &status, WNOHANG);
+        if (ret == pid) break;
+        sys_sched_yield();
     }
-    int status = 0; sys_waitpid(pid, &status, 0); sys_close(p[0]); return status;
+    return status;
 }
 
 static int execute_command_argv(int argc, const char **argv) {
@@ -765,10 +574,10 @@ static int execute_command_argv(int argc, const char **argv) {
             const char *ohpkg_argv[ARG_MAX]; ohpkg_argv[0] = "ohpkg-run"; ohpkg_argv[1] = resolved;
             int i; for (i = 1; i < argc && i + 1 < ARG_MAX - 1; i++) ohpkg_argv[i + 1] = argv[i];
             ohpkg_argv[i + 1] = 0; char runner[PATH_MAX];
-            if (find_in_path("ohpkg-run", runner, sizeof(runner)) == 0) return execute_external_captured(runner, ohpkg_argv);
+            if (find_in_path("ohpkg-run", runner, sizeof(runner)) == 0) return execute_external_direct(runner, ohpkg_argv);
             write_str("gosh: ohpkg-run: not found\n"); return 127;
         }
-        return execute_external_captured(resolved, argv);
+        return execute_external_direct(resolved, argv);
     }
     if (path_result == GOSH_ERR_ACCES || path_result == GOSH_ERR_PERM) { write_str("gosh: "); write_str(argv[0]); write_str(": permission denied\n"); return 126; }
     write_str("gosh: "); write_str(argv[0]); write_str(": command not found\n"); return 127;
@@ -914,7 +723,6 @@ static int builtin_logout(int argc, const char **argv) {
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv;
     g_envp = envp; g_last_exit = 0; g_exit_code = 0; g_hist_count = 0; g_hist_pos = 0;
-    load_theme(); detect_color_support();
 
     if (display_init() < 0) return 1;
 
@@ -928,10 +736,8 @@ int main(int argc, char **argv, char **envp) {
             char login_user[32] = {0};
             login_screen(login_user, sizeof(login_user));
             gosh_set_user(login_user);
-            term_clear();
             write_str("GOSH! v2.0 - OpenHobbyOS Shell\n");
-            term_write("Type 'help' for available commands.\n", 37);
-            display_update();
+            write_str("Type 'help' for available commands.\n");
         }
 
         char line[LINE_MAX];

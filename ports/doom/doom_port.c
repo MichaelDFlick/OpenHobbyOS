@@ -179,8 +179,20 @@ void DG_SetWindowTitle(const char *title) {
     (void)title;
 }
 
+extern int myargc;
+extern char **myargv;
+
 int main(int argc, char **argv) {
+    fprintf(stderr, "doom: main argc=%d argv[0]=%s\n", argc, argv[0] ? argv[0] : "NULL");
+    for (int i = 0; i <= argc; i++) {
+        fprintf(stderr, "doom: argv[%d]=%p\n", i, (void*)argv[i]);
+    }
     doomgeneric_Create(argc, argv);
+    fprintf(stderr, "doom: after create, myargc=%d myargv=%p\n", myargc, (void*)myargv);
+    for (int i = 0; i <= myargc; i++) {
+        fprintf(stderr, "doom: myargv[%d]=%p\n", i, (void*)myargv[i]);
+    }
+    fprintf(stderr, "doom: entering main loop\n");
     while (1) {
         doomgeneric_Tick();
     }
