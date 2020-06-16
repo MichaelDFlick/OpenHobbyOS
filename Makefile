@@ -14,6 +14,7 @@ PIXMAN_PC := $(PORTS_SYSROOT)/lib/pkgconfig/pixman-1.pc
 FASTFETCH_BIN := $(PORTS_DIR)/fastfetch/install/usr/bin/fastfetch
 XNX_COMPOSITOR := $(PORTS_DIR)/xnx/install/bin/xnx-compositor
 INSTALLER_BIN := $(PORTS_SYSROOT)/bin/installer
+MILKYWAY_BIN := $(PORTS_SYSROOT)/bin/milkyway
 TERMINAL_BIN := $(PORTS_SYSROOT)/bin/terminal
 FFMPEG_STAMP := $(PORTS_DIR)/ffmpeg/.built
 OHPLAY_BIN := $(PORTS_DIR)/ohplay/install/bin/ohplay
@@ -40,7 +41,7 @@ LD := ld
 NASM := nasm
 PYTHON := python3
 
-CFLAGS := -std=gnu11 -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -O2 -Wall -Wextra -mno-sse -mno-sse2 -mfpmath=387 -D__OHOS_KERNEL__ -Iinclude -Iuser/lib -Iuser/lib/libtsm/src/tsm -Iuser/lib/libtsm/src/shared -Iuser/lib/libtsm/external/wcwidth -Iuser/lib/uACPI/include -I$(PORTS_SYSROOT)/include
+CFLAGS := -std=gnu11 -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -O2 -Wall -Wextra -mno-sse -mno-sse2 -mfpmath=387 -D__OHOS_KERNEL__ -Iinclude -Iuser/lib -Iuser/lib/libtsm/src/tsm -Iuser/lib/libtsm/src/shared -Iuser/lib/libtsm/external/wcwidth -Iuser/lib/uACPI/include -Iuser/lib/mbedtls/include -I$(PORTS_SYSROOT)/include
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
 ASFLAGS := -f elf32
 
@@ -67,11 +68,13 @@ KERNEL_ARCH_SOURCES := \
 	src/arch/x86/mouse.c \
 	src/arch/x86/memory.c \
 	src/arch/x86/paging.c \
+	src/arch/x86/cpuid.c \
 	src/arch/x86/syscall.c
 
 KERNEL_FS_SOURCES := \
 	src/fs/blkdev.c \
 	src/fs/ata.c \
+	src/fs/enc_blkdev.c \
 	src/fs/mbr.c \
 	src/fs/ext2.c \
 	src/fs/initrd.c \
@@ -150,7 +153,22 @@ LIBTSM_OBJECTS := \
 	$(BUILD_DIR)/libtsm/shared/shl-htable.o \
 	$(BUILD_DIR)/libtsm/external/wcwidth/wcwidth.o
 UACPI_OBJECTS := $(patsubst user/lib/uACPI/source/%.c,$(BUILD_DIR)/uacpi/%.o,$(UACPI_C_SOURCES))
-KERNEL_OBJECTS := $(KERNEL_C_OBJECTS) $(KERNEL_ASM_OBJECTS) $(LIBTSM_OBJECTS) $(UACPI_OBJECTS)
+
+MBEDTLS_C_SOURCES := \
+	user/lib/mbedtls/library/aes.c \
+	user/lib/mbedtls/library/cipher.c \
+	user/lib/mbedtls/library/cipher_wrap.c \
+	user/lib/mbedtls/library/constant_time.c \
+	user/lib/mbedtls/library/hash_info.c \
+	user/lib/mbedtls/library/hkdf.c \
+	user/lib/mbedtls/library/md.c \
+	user/lib/mbedtls/library/pkcs5.c \
+	user/lib/mbedtls/library/platform.c \
+	user/lib/mbedtls/library/platform_util.c \
+	user/lib/mbedtls/library/sha256.c
+
+MBEDTLS_OBJECTS := $(patsubst user/lib/mbedtls/library/%.c,$(BUILD_DIR)/mbedtls/%.o,$(MBEDTLS_C_SOURCES))
+KERNEL_OBJECTS := $(KERNEL_C_OBJECTS) $(KERNEL_ASM_OBJECTS) $(LIBTSM_OBJECTS) $(UACPI_OBJECTS) $(MBEDTLS_OBJECTS)
 
 USER_LIB_SOURCES := \
 	user/lib/start.c \
@@ -166,7 +184,7 @@ endef
 $(foreach prog,$(USER_PROGRAMS),$(eval $(call user_program_template,$(prog))))
 USER_BINS := $(addprefix $(BUILD_DIR)/user/,$(addsuffix .elf,$(USER_PROGRAMS)))
 
-.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-terminal ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
+.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-milkyway ports-terminal ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
 
 all: $(ISO)
 
@@ -215,6 +233,12 @@ $(BUILD_DIR)/libtsm/external/wcwidth/%.o: user/lib/libtsm/external/wcwidth/%.c |
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/uacpi/%.o: user/lib/uACPI/source/%.c | $(BUILD_DIR)/uacpi
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/mbedtls:
+	mkdir -p $(BUILD_DIR)/mbedtls
+
+$(BUILD_DIR)/mbedtls/%.o: user/lib/mbedtls/library/%.c | $(BUILD_DIR)/mbedtls
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/user/%.o: user/%.c | $(BUILD_DIR)/user
@@ -281,10 +305,15 @@ XNX_COMPOSITOR_SOURCES := $(wildcard user/xnx/*.c) $(wildcard user/lib/xnx/*.c)
 $(XNX_COMPOSITOR): $(XNX_COMPOSITOR_SOURCES) ports/xnx/build-xnx.sh $(PIXMAN_PC) $(LODEPNG_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
 	ports/xnx/build-xnx.sh $(PORTS_DIR)/xnx $(PORTS_SYSROOT) || true
 
-INSTALLER_SOURCES := $(wildcard user/installer/*.c)
-$(INSTALLER_BIN): $(INSTALLER_SOURCES) $(CAIRO_PC) $(XNX_COMPOSITOR) $(OHUI_LIB) ports/installer/build-installer.sh | $(PORTS_DIR)
+INSTALLER_SOURCES := $(wildcard user/installer/*.cpp)
+$(INSTALLER_BIN): $(INSTALLER_SOURCES) $(PORTS_SYSROOT)/.newlib.stamp ports/installer/build-installer.sh | $(PORTS_DIR)
 	mkdir -p $(PORTS_DIR)/installer
 	ports/installer/build-installer.sh $(PORTS_DIR)/installer $(PORTS_SYSROOT)
+
+MILKYWAY_SOURCES := $(wildcard user/milkyway/*.cpp)
+$(MILKYWAY_BIN): $(MILKYWAY_SOURCES) $(PORTS_SYSROOT)/.newlib.stamp ports/milkyway/build-milkyway.sh | $(PORTS_DIR)
+	mkdir -p $(PORTS_DIR)/milkyway
+	ports/milkyway/build-milkyway.sh $(PORTS_DIR)/milkyway $(PORTS_SYSROOT)
 
 TERMINAL_SOURCES := $(wildcard user/terminal/*.c)
 $(TERMINAL_BIN): $(TERMINAL_SOURCES) $(CAIRO_PC) $(FREETYPE_PC) $(XNX_COMPOSITOR) ports/terminal/build-terminal.sh | $(PORTS_DIR)
@@ -311,10 +340,10 @@ $(QTDECL_STAMP): ports/qtdeclarative/build-qtdeclarative.sh $(QT_STAMP)
 	ports/qtdeclarative/build-qtdeclarative.sh $(PORTS_DIR)/qtdeclarative $(PORTS_SYSROOT) || true
 	touch $@
 
-$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(GOSH_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD | $(BUILD_DIR)
+$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD | $(BUILD_DIR)
 	tools/build_initrd.sh $@
 
-$(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
+$(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
 	sudo env OPENHOBBYOS_ROOT="$(CURDIR)" "$(CURDIR)/tools/populate_disk.sh" "$(CURDIR)/$(DISK_IMG)"
 
 $(ISO): $(KERNEL) $(INITRD) grub/grub.cfg | $(BUILD_DIR)
@@ -346,6 +375,8 @@ ports-xnx: $(XNX_COMPOSITOR)
 
 ports-installer: $(INSTALLER_BIN)
 
+ports-milkyway: $(MILKYWAY_BIN)
+
 ports-terminal: $(TERMINAL_BIN)
 
 ports-gosh: $(GOSH_BIN)
@@ -374,7 +405,7 @@ ports-qt: $(QT_STAMP)
 
 ports-qtdeclarative: $(QTDECL_STAMP)
 
-ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(TERMINAL_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC)
+ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(TERMINAL_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC)
 
 run: run-gui
 

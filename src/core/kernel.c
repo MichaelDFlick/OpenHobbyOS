@@ -1,4 +1,9 @@
+#include "ata.h"
+#include "blkdev.h"
 #include "console.h"
+#include "cpuid.h"
+#include "crypto.h"
+#include "enc_blkdev.h"
 #include "gdt.h"
 #include "idt.h"
 #include "initrd.h"
@@ -88,6 +93,7 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     memory_init(mbi, (uintptr_t)&__kernel_end);
     paging_init(mbi, memory_total_bytes(), (uintptr_t)&__kernel_end);
 
+    cpu_detect();
     console_activate();
     boot_banner();
 
@@ -95,6 +101,47 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     power_init();
 
     initrd_init(mbi);
+
+    blkdev_init();
+    ata_init();
+    crypto_init();
+
+    {
+        console_write("[init] Enter disk passphrase: ");
+        char passphrase[128];
+        size_t pp_idx = 0;
+        for (;;) {
+            char ch = keyboard_getchar();
+            if (ch == '\n') {
+                console_putc('\n');
+                break;
+            }
+            if (ch == '\b') {
+                if (pp_idx > 0) pp_idx--;
+                continue;
+            }
+            if (ch == 3) {
+                console_write("^C\n");
+                pp_idx = 0;
+                break;
+            }
+            if (pp_idx + 1 < sizeof(passphrase)) {
+                passphrase[pp_idx++] = ch;
+                console_putc('*');
+            }
+        }
+        passphrase[pp_idx] = '\0';
+
+        if (pp_idx > 0) {
+            if (!enc_blkdev_init(0, passphrase)) {
+                panic("Failed to unlock disk");
+            }
+        } else {
+            console_write("[init] no passphrase, skipping disk encryption\n");
+        }
+        crypto_secure_zero(passphrase, sizeof(passphrase));
+    }
+
     vfs_init();
     console_load_ttf();
 
@@ -134,6 +181,16 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     console_putc('\n');
 
     console_clear();
+    console_printf("[init] launching installer...\n");
+    {
+        memory_defragment();
+        int app_status = -1;
+        if (kernel_path_is_executable("/bin/installer")) {
+            const char *app_argv[] = {"/bin/installer", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/installer", 1, app_argv);
+            console_printf("[init] installer exited with status %d\n", app_status);
+        }
+    }
     console_printf("[init] launching shell...\n");
     {
         memory_defragment();
