@@ -106,7 +106,7 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     ata_init();
     crypto_init();
 
-    {
+    if (blkdev_present(0)) {
         console_write("[init] Enter disk passphrase: ");
         char passphrase[128];
         size_t pp_idx = 0;
@@ -140,6 +140,8 @@ void kernel_main(u32 magic, u32 mbi_addr) {
             console_write("[init] no passphrase, skipping disk encryption\n");
         }
         crypto_secure_zero(passphrase, sizeof(passphrase));
+    } else {
+        console_write("[init] no disk detected, skipping encryption\n");
     }
 
     vfs_init();
