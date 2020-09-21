@@ -53,3 +53,6 @@
 [submodule "user/lib/cairo"]
 	path = user/lib/cairo
 	url = https://gitlab.freedesktop.org/cairo/cairo.git
+[submodule "user/lib/mbedtls"]
+	path = user/lib/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
