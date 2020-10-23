@@ -53,4 +53,15 @@ static inline void cpu_pause(void) {
     __asm__ volatile ("rep; nop");
 }
 
+static inline u64 rdmsr(u32 msr) {
+    u32 lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((u64)hi << 32) | lo;
+}
+
+static inline void wrmsr(u32 msr, u64 value) {
+    u32 lo = (u32)value, hi = (u32)(value >> 32);
+    __asm__ volatile ("wrmsr" : : "a"(lo), "d"(hi), "c"(msr) : "memory");
+}
+
 #endif
