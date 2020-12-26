@@ -4,6 +4,7 @@
 #include "types.h"
 
 void pic_remap(void);
+void pic_disable(void);
 void pic_send_eoi(u8 irq);
 void pic_set_mask(u8 irq);
 void pic_clear_mask(u8 irq);

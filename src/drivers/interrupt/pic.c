@@ -9,6 +9,11 @@
 #define PIC2_COMMAND PIC2
 #define PIC2_DATA (PIC2 + 1)
 
+void pic_disable(void) {
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+}
+
 void pic_remap(void) {
     u8 mask1 = inb(PIC1_DATA);
     u8 mask2 = inb(PIC2_DATA);
