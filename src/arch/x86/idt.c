@@ -79,6 +79,11 @@ extern void irq13(void);
 extern void irq14(void);
 extern void irq15(void);
 extern void isr128(void);
+extern void isr_apic_tlb(void);
+extern void isr_apic_resched(void);
+extern void isr_apic_timer(void);
+extern void isr_apic_error(void);
+extern void isr_apic_spurious(void);
 
 static const char *const exception_names[32] = {
     "divide error",
@@ -190,6 +195,13 @@ void idt_init(void) {
 
     idt_set_gate(128, (u32)(uintptr_t)isr128, KERNEL_CS, 0xEE);
 
+    /* APIC vectors */
+    idt_set_gate(251, (u32)(uintptr_t)isr_apic_tlb, KERNEL_CS, 0x8E);
+    idt_set_gate(252, (u32)(uintptr_t)isr_apic_resched, KERNEL_CS, 0x8E);
+    idt_set_gate(253, (u32)(uintptr_t)isr_apic_timer, KERNEL_CS, 0x8E);
+    idt_set_gate(254, (u32)(uintptr_t)isr_apic_error, KERNEL_CS, 0x8E);
+    idt_set_gate(255, (u32)(uintptr_t)isr_apic_spurious, KERNEL_CS, 0x8E);
+
     idt_load(&idt_ptr);
 }
 
@@ -221,6 +233,10 @@ bool idt_last_user_syscall_frame(registers_t *out) {
 
     *out = last_user_syscall_regs;
     return true;
+}
+
+void idt_load_current(void) {
+    idt_load(&idt_ptr);
 }
 
 void isr_dispatch(registers_t *regs) {
@@ -270,6 +286,38 @@ void isr_dispatch(registers_t *regs) {
 
     if (regs->int_no == 128) {
         regs->eax = (u32)syscall_dispatch(regs);
+        return;
+    }
+
+    /* APIC spurious interrupt (vector 0xFF) - just return, no EOI */
+    if (regs->int_no == 255) {
+        return;
+    }
+
+    /* APIC error interrupt (vector 0xFE) */
+    if (regs->int_no == 254) {
+        console_printf("[apic] error interrupt on CPU %u\n", this_cpu_id());
+        apic_eoi();
+        return;
+    }
+
+    /* APIC timer (vector 0xFD) */
+    if (regs->int_no == 253) {
+        apic_eoi();
+        task_timer_tick(regs);
+        return;
+    }
+
+    /* APIC reschedule IPI (vector 0xFC) */
+    if (regs->int_no == 252) {
+        apic_eoi();
+        return;
+    }
+
+    /* APIC TLB shootdown IPI (vector 0xFB) */
+    if (regs->int_no == 251) {
+        apic_eoi();
+        paging_flush_tlb();
         return;
     }
 

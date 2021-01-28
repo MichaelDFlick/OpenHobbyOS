@@ -32,5 +32,6 @@ void irq_install_handler(u8 irq, irq_handler_t handler);
 void irq_remove_handler(u8 irq);
 bool idt_last_user_frame(registers_t *out);
 bool idt_last_user_syscall_frame(registers_t *out);
+void idt_load_current(void);
 
 #endif

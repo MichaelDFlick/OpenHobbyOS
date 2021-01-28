@@ -83,6 +83,37 @@ isr128:
     push dword 128
     jmp isr_common
 
+; APIC vectors
+global isr_apic_tlb
+isr_apic_tlb:
+    push dword 0
+    push dword 251
+    jmp isr_common
+
+global isr_apic_resched
+isr_apic_resched:
+    push dword 0
+    push dword 252
+    jmp isr_common
+
+global isr_apic_timer
+isr_apic_timer:
+    push dword 0
+    push dword 253
+    jmp isr_common
+
+global isr_apic_error
+isr_apic_error:
+    push dword 0
+    push dword 254
+    jmp isr_common
+
+global isr_apic_spurious
+isr_apic_spurious:
+    push dword 0
+    push dword 255
+    jmp isr_common
+
 isr_common:
     push ds
     push es
@@ -94,6 +125,7 @@ isr_common:
     mov ds, ax
     mov es, ax
     mov fs, ax
+    mov ax, 0x3B
     mov gs, ax
     push esp
     call isr_dispatch
