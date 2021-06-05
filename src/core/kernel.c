@@ -1,3 +1,4 @@
+#include "apic.h"
 #include "ata.h"
 #include "blkdev.h"
 #include "console.h"
@@ -23,6 +24,7 @@
 #include "virtio_net.h"
 #include "task.h"
 #include "thread.h"
+#include "swap.h"
 #include "vfs.h"
 
 static bool kernel_path_is_executable(const char *path) {
@@ -84,9 +86,10 @@ void kernel_main(u32 magic, u32 mbi_addr) {
                        (cr4_val & 0x20) ? "ON" : "OFF");
     }
 
-    gdt_init((uintptr_t)&stack_top);
+    gdt_init(&cpus[0], (uintptr_t)&stack_top);
     pic_remap();
     idt_init();
+    apic_init();
     pit_init(100);
     keyboard_init();
     mouse_init();
@@ -144,6 +147,18 @@ void kernel_main(u32 magic, u32 mbi_addr) {
         console_write("[init] no disk detected, skipping encryption\n");
     }
 
+    /* Initialize swap on disk block device 0 (last 32MB of device 0) */
+    {
+        u64 dev_sectors = blkdev_total_sectors(0);
+        if (dev_sectors > 65536) {
+            u32 swap_sectors = 65536;
+            u32 swap_start = (u32)(dev_sectors - swap_sectors);
+            swap_init(0, swap_start, swap_sectors);
+        } else {
+            console_write("[init] no swap: disk too small\n");
+        }
+    }
+
     vfs_init();
     console_load_ttf();
 
@@ -151,6 +166,11 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     netdev_init();
     rtl8139_init();
     virtio_net_init();
+
+    /* SMP/APIC initialization */
+    ioapic_init();
+    lapic_timer_calibrate();
+    smp_init();
 
     task_init();
     thread_init();
