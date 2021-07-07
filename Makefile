@@ -39,9 +39,10 @@ QEMU_RUN_DISK := $(QEMU) $(QEMU_COMMON_ARGS) $(QEMU_DISK_ARGS) $(QEMU_GUI_ARGS)
 CC := gcc
 LD := ld
 NASM := nasm
+OBJCOPY := objcopy
 PYTHON := python3
 
-CFLAGS := -std=gnu11 -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -O2 -Wall -Wextra -mno-sse -mno-sse2 -mfpmath=387 -D__OHOS_KERNEL__ -Iinclude -Iuser/lib -Iuser/lib/libtsm/src/tsm -Iuser/lib/libtsm/src/shared -Iuser/lib/libtsm/external/wcwidth -Iuser/lib/uACPI/include -Iuser/lib/mbedtls/include -I$(PORTS_SYSROOT)/include
+CFLAGS := -std=gnu11 -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -O2 -Wall -Wextra -mno-sse -mno-sse2 -mfpmath=387 -D__OHOS_KERNEL__ -DMBEDTLS_CONFIG_FILE=\"mbedtls_config_kernel.h\" -Iinclude -Iuser/lib -Iuser/lib/libtsm/src/tsm -Iuser/lib/libtsm/src/shared -Iuser/lib/libtsm/external/wcwidth -Iuser/lib/uACPI/include -Iuser/lib/mbedtls/include -I$(PORTS_SYSROOT)/include
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
 ASFLAGS := -f elf32
 
@@ -57,23 +58,20 @@ KERNEL_CORE_SOURCES := \
 	src/core/format.c \
 	src/core/panic.c \
 	src/core/compiler_rt.c \
-	src/core/tsm_compat.c
+	src/core/tsm_compat.c \
+	src/core/mbedtls_stubs.c
 
 KERNEL_ARCH_SOURCES := \
 	src/arch/x86/gdt.c \
-	src/arch/x86/pic.c \
 	src/arch/x86/idt.c \
-	src/arch/x86/pit.c \
-	src/arch/x86/keyboard.c \
-	src/arch/x86/mouse.c \
 	src/arch/x86/memory.c \
 	src/arch/x86/paging.c \
 	src/arch/x86/cpuid.c \
-	src/arch/x86/syscall.c
+	src/arch/x86/syscall.c \
+	src/arch/x86/smp.c
 
 KERNEL_FS_SOURCES := \
 	src/fs/blkdev.c \
-	src/fs/ata.c \
 	src/fs/enc_blkdev.c \
 	src/fs/mbr.c \
 	src/fs/ext2.c \
@@ -84,18 +82,27 @@ KERNEL_FS_SOURCES := \
 	src/fs/pipe.c
 
 KERNEL_NET_SOURCES := \
-	src/net/netdev.c \
-	src/net/pci.c \
-	src/net/rtl8139.c \
-	src/net/virtio_net.c
+	src/net/netdev.c
 
 KERNEL_TASK_SOURCES := \
 	src/task/task.c \
-	src/task/thread.c
+	src/task/thread.c \
+	src/task/swap.c
 
 KERNEL_POWER_SOURCES := \
 	src/power/power.c \
 	src/power/uacpi_port.c
+
+KERNEL_DRIVERS_SOURCES := \
+	src/drivers/input/keyboard.c \
+	src/drivers/input/mouse.c \
+	src/drivers/interrupt/pic.c \
+	src/drivers/interrupt/apic.c \
+	src/drivers/timer/pit.c \
+	src/drivers/storage/ata.c \
+	src/drivers/net/rtl8139.c \
+	src/drivers/net/virtio_net.c \
+	src/drivers/bus/pci.c
 
 KERNEL_C_SOURCES := \
 	$(KERNEL_CORE_SOURCES) \
@@ -103,7 +110,8 @@ KERNEL_C_SOURCES := \
 	$(KERNEL_FS_SOURCES) \
 	$(KERNEL_NET_SOURCES) \
 	$(KERNEL_TASK_SOURCES) \
-	$(KERNEL_POWER_SOURCES)
+	$(KERNEL_POWER_SOURCES) \
+	$(KERNEL_DRIVERS_SOURCES)
 
 KERNEL_ASM_SOURCES := \
 	src/arch/x86/boot.asm \
@@ -158,7 +166,6 @@ MBEDTLS_C_SOURCES := \
 	user/lib/mbedtls/library/aes.c \
 	user/lib/mbedtls/library/cipher.c \
 	user/lib/mbedtls/library/cipher_wrap.c \
-	user/lib/mbedtls/library/constant_time.c \
 	user/lib/mbedtls/library/hash_info.c \
 	user/lib/mbedtls/library/hkdf.c \
 	user/lib/mbedtls/library/md.c \
@@ -176,7 +183,7 @@ USER_LIB_SOURCES := \
 	user/lib/newlib-gloss.c \
 	user/lib/runtime.c
 
-USER_PROGRAMS := hello uname toolbox sh test_fb net_test net_info
+USER_PROGRAMS := hello uname toolbox sh test_fb net_test net_info ohloader ohpleasepanic
 
 define user_program_template
 USER_OBJECTS_$(1) := $(patsubst user/%.c,$(BUILD_DIR)/user/%.o,user/$(1).c) $$(patsubst user/lib/%.c,$(BUILD_DIR)/user/lib/%.o,$(USER_LIB_SOURCES))
@@ -184,7 +191,7 @@ endef
 $(foreach prog,$(USER_PROGRAMS),$(eval $(call user_program_template,$(prog))))
 USER_BINS := $(addprefix $(BUILD_DIR)/user/,$(addsuffix .elf,$(USER_PROGRAMS)))
 
-.PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-milkyway ports-terminal ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
+ .PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-milkyway ports-terminal ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
 
 all: $(ISO)
 
@@ -241,6 +248,18 @@ $(BUILD_DIR)/mbedtls:
 $(BUILD_DIR)/mbedtls/%.o: user/lib/mbedtls/library/%.c | $(BUILD_DIR)/mbedtls
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# SMP trampoline: assemble as flat binary, then wrap in ELF
+SMP_TRAMPOLINE_BIN := $(BUILD_DIR)/smp_trampoline.bin
+SMP_TRAMPOLINE_OBJ := $(BUILD_DIR)/src/arch/x86/smp_trampoline.o
+
+$(SMP_TRAMPOLINE_BIN): src/arch/x86/smp_trampoline.asm | $(BUILD_DIR)/src
+	$(NASM) -f bin -o $@ $<
+
+$(SMP_TRAMPOLINE_OBJ): $(SMP_TRAMPOLINE_BIN)
+	$(OBJCOPY) -B i386 -I binary -O elf32-i386 $< $@
+
+KERNEL_OBJECTS += $(SMP_TRAMPOLINE_OBJ)
+
 $(BUILD_DIR)/user/%.o: user/%.c | $(BUILD_DIR)/user
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -280,6 +299,12 @@ $(BUILD_DIR)/user/net_test.elf: $(USER_OBJECTS_net_test) user.ld
 
 $(BUILD_DIR)/user/net_info.elf: $(USER_OBJECTS_net_info) user.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJECTS_net_info)
+
+$(BUILD_DIR)/user/ohloader.elf: $(USER_OBJECTS_ohloader) user.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJECTS_ohloader)
+
+$(BUILD_DIR)/user/ohpleasepanic.elf: $(USER_OBJECTS_ohpleasepanic) user.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJECTS_ohpleasepanic)
 
 $(PORTS_SYSROOT)/.newlib.stamp: ports/newlib/build-newlib.sh $(NEWLIB_PORT_FILES) | $(PORTS_DIR)
 	ports/newlib/build-newlib.sh $(PORTS_DIR)/newlib $(PORTS_SYSROOT)
@@ -323,6 +348,7 @@ $(TERMINAL_BIN): $(TERMINAL_SOURCES) $(CAIRO_PC) $(FREETYPE_PC) $(XNX_COMPOSITOR
 $(GOSH_BIN): user/gosh.c user/lib/syscall.c user/lib/runtime.c $(CAIRO_PC) $(FREETYPE_PC) $(XNX_COMPOSITOR) ports/gosh/build-gosh.sh | $(PORTS_DIR)
 	mkdir -p $(PORTS_DIR)/gosh
 	ports/gosh/build-gosh.sh $(PORTS_DIR)/gosh $(PORTS_SYSROOT)
+
 
 $(OHPLAY_BIN): ports/ohplay/build-ohplay.sh $(XNX_COMPOSITOR) $(FFMPEG_STAMP) $(ZLIB_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
 	ports/ohplay/build-ohplay.sh $(PORTS_DIR)/ohplay $(PORTS_SYSROOT)
@@ -378,6 +404,8 @@ ports-installer: $(INSTALLER_BIN)
 ports-milkyway: $(MILKYWAY_BIN)
 
 ports-terminal: $(TERMINAL_BIN)
+
+
 
 ports-gosh: $(GOSH_BIN)
 
