@@ -19,6 +19,7 @@
 #include "vfs.h"
 #include "memory.h"
 #include "pit.h"
+#include "panic.h"
 #include "power.h"
 
 extern task_state_t current_task;
@@ -1419,6 +1420,11 @@ static int sys_pipe(registers_t *regs) {
     return 0;
 }
 
+static int sys_oh_pleasepanic(UNUSED registers_t *regs) {
+    panic("ohpleasepanic: triggered by user request");
+    return 0;
+}
+
 static int sys_oh_reboot(UNUSED registers_t *regs) {
     if (task_state()->euid != 0u) {
         return LERR_PERM;
@@ -1991,6 +1997,9 @@ int syscall_dispatch(registers_t *regs) {
             break;
         case OHOS_SYS_INSTALL_OP:
             result = sys_install_op(regs);
+            break;
+        case OHOS_SYS_PLEASEPANIC:
+            result = sys_oh_pleasepanic(regs);
             break;
         default:
             result = LERR_INVAL;

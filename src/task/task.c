@@ -459,6 +459,30 @@ void task_free_slot_by_index(int index) {
     task_free_slot(&task_slots[index]);
 }
 
+bool task_slot_is_runnable(int index) {
+    if (index < 0 || index >= TASK_MAX_SLOTS || !task_slots[index].used)
+        return false;
+    return task_slots[index].status == TASK_SLOT_RUNNABLE;
+}
+
+bool task_slot_is_zombie(int index) {
+    if (index < 0 || index >= TASK_MAX_SLOTS || !task_slots[index].used)
+        return false;
+    return task_slots[index].status == TASK_SLOT_ZOMBIE;
+}
+
+int task_slot_exit_code(int index) {
+    if (index < 0 || index >= TASK_MAX_SLOTS || !task_slots[index].used)
+        return -1;
+    return task_slots[index].exit_code;
+}
+
+int task_slot_parent_pid(int index) {
+    if (index < 0 || index >= TASK_MAX_SLOTS || !task_slots[index].used)
+        return -1;
+    return task_slots[index].parent_pid;
+}
+
 static bool task_slot_write_to_user(task_slot_t *slot, u32 user_addr, const void *src, size_t length) {
     if (!slot || !slot->page_directory || !src || length == 0) {
         return false;
@@ -1110,7 +1134,6 @@ u32 task_brk(u32 requested) {
     page_directory_t *pd = page_directory_get_current();
 
     if (!current_task.active && !current_task.brk) {
-        console_printf("[brk] inactive+no_brk\n");
         return 0;
     }
 
@@ -1119,15 +1142,11 @@ u32 task_brk(u32 requested) {
     }
 
     if (requested < current_task.brk_base || requested >= current_task.brk_limit) {
-        console_printf("[brk] range fail: req=%x base=%x limit=%x brk=%x\n",
-            requested, current_task.brk_base, current_task.brk_limit, current_task.brk);
         return current_task.brk;
     }
 
     if (requested > current_task.brk &&
         task_mapping_overlaps(current_task.brk, requested - current_task.brk)) {
-        console_printf("[brk] overlap fail: req=%x brk=%x delta=%x\n",
-            requested, current_task.brk, requested - current_task.brk);
         return current_task.brk;
     }
 
@@ -1135,9 +1154,6 @@ u32 task_brk(u32 requested) {
         /* Allocate pages for the expanded heap */
         u32 start_page = current_task.brk & PAGE_MASK;
         u32 end_page = (requested - 1) & PAGE_MASK;
-
-        console_printf("[brk] expanding: brk=%x -> %x pages=%x-%x\n",
-            current_task.brk, requested, start_page, end_page);
 
         for (u32 va = start_page; va <= end_page; va += PAGE_SIZE) {
             /* Only skip the page if we have a private page table
@@ -1155,21 +1171,16 @@ u32 task_brk(u32 requested) {
                 needs_map = !(brk_pt->entries[brk_pt_idx] & PTE_USER);
             }
             if (needs_map) {
-                console_printf("[brk]  alloc_page va=%x\n", va);
                 if (!paging_alloc_user_page(pd, va, PTE_USER | PTE_RW)) {
-                    console_printf("[brk]  alloc_page FAILED va=%x\n", va);
                     return current_task.brk;
                 }
             }
         }
 
         memset((void *)(uintptr_t)current_task.brk, 0, requested - current_task.brk);
-    } else if (requested < current_task.brk) {
-        console_printf("[brk] shrinking: brk=%x -> %x\n", current_task.brk, requested);
     }
 
     current_task.brk = requested;
-    console_printf("[brk] success: brk=%x\n", current_task.brk);
     return current_task.brk;
 }
 

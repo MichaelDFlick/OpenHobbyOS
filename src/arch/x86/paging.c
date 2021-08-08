@@ -5,6 +5,7 @@
 #include "panic.h"
 #include "string.h"
 #include "task.h"
+#include "swap.h"
 
 /* Frame allocator state */
 static frame_allocator_t g_frame_allocator;
@@ -59,14 +60,19 @@ bool frame_alloc_init(u32 memory_start, u32 memory_end, u32 first_frame) {
 }
 
 u32 frame_alloc(void) {
-    for (u32 i = 0; i < g_frame_allocator.total_frames; i++) {
-        u32 idx = i / 32;
-        u32 bit = i % 32;
-        
-        if (!(g_frame_allocator.bitmap[idx] & (1U << bit))) {
-            g_frame_allocator.bitmap[idx] |= (1U << bit);
-            g_frame_allocator.used_frames++;
-            return (g_frame_allocator.first_frame + i) * PAGE_SIZE;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        for (u32 i = 0; i < g_frame_allocator.total_frames; i++) {
+            u32 idx = i / 32;
+            u32 bit = i % 32;
+
+            if (!(g_frame_allocator.bitmap[idx] & (1U << bit))) {
+                g_frame_allocator.bitmap[idx] |= (1U << bit);
+                g_frame_allocator.used_frames++;
+                return (g_frame_allocator.first_frame + i) * PAGE_SIZE;
+            }
+        }
+        if (attempt == 0) {
+            if (!swap_try_evict()) break;
         }
     }
     return 0; /* Out of memory */
@@ -856,27 +862,79 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
         }
     }
 
-unhandled:
-    /* Handle demand-zero paging */
-    if (!present && user && virt_addr < KERNEL_VIRTUAL_BASE) {
-        /* Check if this is a demand-zero page */
+    /*
+     * Identity-mapped kernel PTEs leaked into privatized page tables.
+     * When a user PDE is privatized (ALLOCATED), the kernel identity
+     * PTEs are memcpy'd into the new page table.  Any PTE that hasn't
+     * been overwritten by a proper user mapping still carries the
+     * original flags (PRESENT|RW|GLOBAL) without PTE_USER.  Catch
+     * these and upgrade them.
+     */
+    if (present && user && virt_addr < KERNEL_VIRTUAL_BASE) {
         u32 pd_idx = virt_to_pd_index(virt_addr);
-        
-        if (pd->entries[pd_idx] & PTE_PRESENT) {
+        u32 pt_idx = virt_to_pt_index(virt_addr);
+
+        if ((pd->entries[pd_idx] & PTE_ALLOCATED) &&
+            (pd->entries[pd_idx] & PTE_USER)) {
             u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
-            page_table_t *pt = ptable_ptr( pt_phys);
-            u32 pt_idx = virt_to_pt_index(virt_addr);
-            
-            if ((pt->entries[pt_idx] & PTE_DEMAND_ZERO) && !(pt->entries[pt_idx] & PTE_PRESENT)) {
-                if (handle_demand_anon(pd, virt_addr, rw)) {
-                    return; /* Success - page allocated */
-                }
+            page_table_t *pt = ptable_ptr(pt_phys);
+            u32 pte = pt->entries[pt_idx];
+
+            if ((pte & PTE_PRESENT) && !(pte & PTE_USER)) {
+                pt->entries[pt_idx] = entry_create(
+                    entry_get_phys(pte),
+                    (entry_get_flags(pte) & ~PTE_GLOBAL) | PTE_USER);
+                paging_invalidate_tlb(virt_addr);
+                return;
             }
         }
-        
+    }
+
+unhandled:
+    /* Handle demand-zero and swapped-out pages */
+    if (!present && user && virt_addr < KERNEL_VIRTUAL_BASE) {
+        u32 pd_idx = virt_to_pd_index(virt_addr);
+
+        if (pd->entries[pd_idx] & PTE_PRESENT) {
+            u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
+            page_table_t *pt = ptable_ptr(pt_phys);
+            u32 pt_idx = virt_to_pt_index(virt_addr);
+            u32 pte = pt->entries[pt_idx];
+
+            /* Demand-zero page */
+            if ((pte & PTE_DEMAND_ZERO) && !(pte & PTE_PRESENT)) {
+                if (handle_demand_anon(pd, virt_addr, rw)) {
+                    return;
+                }
+            }
+
+            /* Swapped-out page — read back from disk */
+            if ((pte & PTE_SWAPPED) && !(pte & PTE_PRESENT)) {
+                u32 slot = (pte >> 12) & 0xFFFFF;
+                u16 orig_flags;
+                u32 phys = frame_alloc();
+                if (!phys) {
+                    console_printf("[page_fault] OOM during swap-in\n");
+                    goto unhandled_log;
+                }
+
+                if (!swap_in_page(slot, phys, &orig_flags)) {
+                    frame_free(phys);
+                    goto unhandled_log;
+                }
+
+                u16 restore_flags = orig_flags | PTE_PRESENT | PTE_ALLOCATED | PTE_ACCESSED;
+                pt->entries[pt_idx] = entry_create(phys, restore_flags);
+                paging_invalidate_tlb(virt_addr);
+                return;
+            }
+        }
+
         /* Unmapped user address - this is a real fault */
         console_printf("[page_fault] unmapped user address %x\n", virt_addr);
     }
+
+unhandled_log:
     
     /* Log the fault and kill the process */
     console_printf("[page_fault] %s at %x by %s (%s%s%s)\n",
@@ -1168,4 +1226,24 @@ void paging_init(const multiboot_info_t *mbi, u32 total_memory_bytes, u32 kernel
 /* Helper to get kernel page directory for copying */
 page_directory_t *paging_get_kernel_pd(void) {
     return kernel_page_directory;
+}
+
+bool paging_memory_pressure(void) {
+    u32 free = frame_free_count();
+    u32 total = frame_total();
+    if (total == 0) return true;
+    return (free < total / 20) || (free < 32);
+}
+
+u32 paging_available_memory(void) {
+    return frame_free_count() * (PAGE_SIZE / 1024);
+}
+
+void paging_evict_pages(u32 target_kb) {
+    u32 freed = 0;
+    u32 target = (target_kb + 3) / 4;
+    while (freed < target) {
+        if (!swap_try_evict()) break;
+        freed++;
+    }
 }

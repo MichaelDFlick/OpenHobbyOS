@@ -185,6 +185,10 @@ bool task_slot_regs(int index, registers_t *out);
 int task_create_thread_slot(u32 (*start_func)(void*), void *arg,
                             u32 user_stack_top, u32 user_stack_base, u32 user_stack_size);
 void task_free_slot_by_index(int index);
+bool task_slot_is_runnable(int index);
+bool task_slot_is_zombie(int index);
+int task_slot_exit_code(int index);
+int task_slot_parent_pid(int index);
 
 extern uintptr_t task_saved_esp;
 extern int task_exit_code;
