@@ -44,6 +44,8 @@ ohos_rootfs_append_entries() {
     _out+=("$ROOT/build/user/test_fb.elf::/bin/test_fb")
     _out+=("$ROOT/build/user/net_test.elf::/bin/net_test")
     _out+=("$ROOT/build/user/net_info.elf::/bin/net_info")
+    _out+=("$ROOT/build/user/ohloader.elf::/bin/ohloader")
+    _out+=("$ROOT/build/user/ohpleasepanic.elf::/bin/ohpleasepanic")
 
     if [[ -f "$ROOT/build/user/ohpkg_read.elf" ]]; then
         _out+=("$ROOT/build/user/ohpkg_read.elf::/bin/ohpkg-read")
@@ -108,6 +110,7 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/doom::/bin/doom")
     fi
 
+
     if [[ -f "$ROOT/assets/fonts/Monospace/Monospace.ttf" ]]; then
         _out+=("$ROOT/assets/fonts/Monospace/Monospace.ttf::/fonts/Monospace.ttf")
     fi
@@ -122,6 +125,7 @@ ohos_rootfs_append_entries() {
     if [[ -f "$ROOT/build/ports/sysroot/bin/gears" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/gears::/bin/gears")
     fi
+
 
     if [[ -d "$ROOT/build/ports/sysroot/plugins/platforms" ]]; then
         for plugin in "$ROOT/build/ports/sysroot/plugins/platforms/"*.so; do

@@ -110,6 +110,7 @@
 #define OHOS_SYS_BLKREAD        425
 #define OHOS_SYS_BLKWRITE       426
 #define OHOS_SYS_INSTALL_OP     427
+#define OHOS_SYS_PLEASEPANIC    428
 
 #define LINUX_AT_FDCWD (-100)
 

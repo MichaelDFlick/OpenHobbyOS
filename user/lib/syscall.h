@@ -34,6 +34,7 @@ void *sys_mmap2(void *addr, unsigned int length, int prot, int flags, int fd, un
 int sys_munmap(void *addr, unsigned int length);
 int sys_stat(const char *path, struct linux_stat64 *stat);
 int sys_stat64(const char *path, struct linux_stat64 *stat);
+int sys_unlink(const char *path);
 int sys_fstat64(int fd, struct linux_stat64 *stat);
 int sys_getdents64(int fd, void *buffer, unsigned int size);
 int sys_getuid32(void);
@@ -61,6 +62,7 @@ int sys_thread_yield(void);
 unsigned int sys_thread_self(void);
 int sys_reboot(void);
 int sys_shutdown(void);
+int sys_pleasepanic(void);
 int sys_suspend(void);
 int sys_memstat(unsigned int buffer[5]);
 int sys_ticks(void);

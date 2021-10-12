@@ -93,6 +93,10 @@ int sys_close(int fd) {
     return syscall1(LINUX_SYS_CLOSE, fd);
 }
 
+int sys_unlink(const char *path) {
+    return syscall1(OHOS_SYS_UNLINK, (int)path);
+}
+
 int sys_lseek(int fd, int offset, int whence) {
     return syscall3(LINUX_SYS_LSEEK, fd, offset, whence);
 }
@@ -275,6 +279,10 @@ int sys_reboot(void) {
 
 int sys_shutdown(void) {
     return syscall0(OHOS_SYS_SHUTDOWN);
+}
+
+int sys_pleasepanic(void) {
+    return syscall0(OHOS_SYS_PLEASEPANIC);
 }
 
 int sys_suspend(void) {

@@ -304,8 +304,16 @@ static void qemu_shutdown_fallback(void) {
 }
 
 static void keyboard_controller_reboot(void) {
-    while (inb(0x64) & 0x02);
+    for (unsigned int timeout = 0; timeout < 100000 && (inb(0x64) & 0x02); timeout++) {
+        io_wait();
+    }
     outb(0x64, 0xFE);
+}
+
+static void triple_fault_reboot(void) {
+    static const idt_ptr_t empty_idt = {0, 0};
+    __asm__ volatile ("lidt %0" : : "m"(empty_idt) : "memory");
+    __asm__ volatile ("int3");
 }
 
 void power_init(void) {
@@ -436,11 +444,9 @@ bool power_suspend(void) {
 
 NORETURN void power_reboot(void) {
     if (uacpi_available) {
-        uacpi_status st = uacpi_reboot();
-        if (st == UACPI_STATUS_OK) {
+        if (uacpi_reboot() == UACPI_STATUS_OK) {
             for (;;) cpu_halt();
         }
-        console_printf("[power] uACPI reboot failed (%d), trying fallback\n", (int)st);
     }
 
     if (power_state.reset_reg.address_space == 1 &&
@@ -449,16 +455,12 @@ NORETURN void power_reboot(void) {
         outb((u16)power_state.reset_reg.address, power_state.reset_value);
     }
 
-    keyboard_controller_reboot();
-
     outb(0xCF9, 0x02);
     outb(0xCF9, 0x06);
 
-    {
-        static const idt_ptr_t empty_idt = {0, 0};
-        __asm__ volatile ("lidt (%0)" : : "r"(&empty_idt) : "memory");
-        __asm__ volatile ("int3");
-    }
+    keyboard_controller_reboot();
+
+    triple_fault_reboot();
 
     for (;;) cpu_halt();
 }
