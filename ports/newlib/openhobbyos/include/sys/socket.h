@@ -17,6 +17,11 @@ struct sockaddr_storage {
     char __ss_padding[126];
 };
 
+struct linger {
+    int l_onoff;
+    int l_linger;
+};
+
 #define AF_UNSPEC 0
 #define AF_UNIX   1
 #define AF_INET   2
@@ -35,15 +40,25 @@ struct sockaddr_storage {
 #define SOCK_DGRAM  2
 #define SOCK_RAW    3
 #define SOCK_CLOEXEC 0x80000
+#define SOCK_NONBLOCK 04000
 
 #define SHUT_RD   0
 #define SHUT_WR   1
 #define SHUT_RDWR 2
 
 #define SOL_SOCKET 1
-#define SO_ERROR   4
-#define SO_RCVBUF  8
-#define SO_RCVTIMEO 20
+#define SO_REUSEADDR 2
+#define SO_TYPE      3
+#define SO_ERROR     4
+#define SO_BROADCAST 6
+#define SO_SNDBUF    7
+#define SO_RCVBUF    8
+#define SO_KEEPALIVE 9
+#define SO_OOBINLINE 10
+#define SO_LINGER    13
+#define SO_REUSEPORT 15
+#define SO_RCVTIMEO  20
+#define SO_SNDTIMEO  21
 
 #define MSG_NOSIGNAL 0x4000
 #define MSG_DONTWAIT 0x40

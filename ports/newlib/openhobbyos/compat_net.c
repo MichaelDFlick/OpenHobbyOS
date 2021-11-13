@@ -18,6 +18,15 @@
 #include "compat.h"
 #include "pseudofd.h"
 
+/* Missing netdb constants that newlib may not provide */
+#ifndef HOST_NOT_FOUND
+#define HOST_NOT_FOUND 1
+#define TRY_AGAIN      2
+#define NO_RECOVERY    3
+#define NO_DATA        4
+#define NO_ADDRESS     NO_DATA
+#endif
+
 const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
 const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
 int h_errno;

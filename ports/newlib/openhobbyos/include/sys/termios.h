@@ -23,15 +23,56 @@ struct termios {
 #define VERASE 2
 #define VKILL 3
 #define VEOF 4
+#define VEOL 5
 #define VTIME 5
 #define VMIN 6
+#define VEOL2 8
+#define VSWTC 7
+#define VSTART 8
+#define VSTOP 9
+#define VSUSP 10
 
-#define ISIG 0x00000001u
-#define ICANON 0x00000002u
-#define ECHO 0x00000008u
+/* c_iflag */
+#define IGNBRK  0x00000001u
+#define BRKINT  0x00000002u
+#define ICRNL   0x00000100u
+#define INPCK   0x00000010u
+#define ISTRIP  0x00000020u
+#define IXON    0x00000400u
+#define PARMRK  0x00000008u
+#define IGNCR   0x00000080u
+#define INLCR   0x00000040u
+#define IXOFF   0x00001000u
+#define IXANY   0x00000800u
+#define IMAXBEL 0x00002000u
 
-#define CS8 0x00000030u
-#define CREAD 0x00000080u
+/* c_oflag */
+#define OPOST   0x00000001u
+
+/* c_lflag */
+#define ISIG    0x00000001u
+#define ICANON  0x00000002u
+#define ECHO    0x00000008u
+#define ECHOE   0x00000002u
+#define ECHOK   0x00000004u
+#define ECHONL  0x00000010u
+#define NOFLSH  0x00000080u
+#define TOSTOP  0x00000100u
+#define ECHOCTL 0x00000040u
+#define ECHOPRT 0x00000020u
+#define ECHOKE  0x00000008u
+#define FLUSHO  0x00001000u
+#define PENDIN  0x00004000u
+#define IEXTEN  0x00008000u
+
+/* c_cflag */
+#define CSIZE   0x00000030u
+#define CS5     0x00000000u
+#define CS6     0x00000010u
+#define CS7     0x00000020u
+#define CS8     0x00000030u
+#define PARENB  0x00000040u
+#define CREAD   0x00000080u
 
 #define ONLCR 0x00000004u
 
@@ -49,6 +90,7 @@ extern "C" {
 
 int tcgetattr(int fd, struct termios *termios_p);
 int tcsetattr(int fd, int optional_actions, const struct termios *termios_p);
+void cfmakeraw(struct termios *tio);
 
 #ifdef __cplusplus
 }

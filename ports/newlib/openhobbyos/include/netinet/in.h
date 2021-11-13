@@ -31,9 +31,37 @@ struct sockaddr_in6 {
     uint32_t sin6_scope_id;
 };
 
-#define IPPROTO_IP   0
-#define IPPROTO_TCP  6
-#define IPPROTO_UDP  17
+#define IPPROTO_IP    0
+#define IPPROTO_ICMP  1
+#define IPPROTO_TCP   6
+#define IPPROTO_UDP   17
+#define IPPROTO_IPV6  41
+
+#define SOL_IP      0
+#define SOL_TCP     6
+#define SOL_UDP     17
+#define SOL_IPV6    41
+
+#define IP_TOS              1
+#define IP_TTL              2
+#define IP_RECVERR          11
+#define IP_PKTINFO          8
+#define IP_MULTICAST_IF     32
+#define IP_MULTICAST_TTL    33
+#define IP_MULTICAST_LOOP   34
+#define IP_ADD_MEMBERSHIP   35
+#define IP_DROP_MEMBERSHIP  36
+
+#define IPV6_V6ONLY          26
+#define IPV6_RECVERR         25
+#define IPV6_MULTICAST_IF    17
+#define IPV6_MULTICAST_HOPS  18
+#define IPV6_MULTICAST_LOOP  19
+#define IPV6_ADD_MEMBERSHIP  20
+#define IPV6_DROP_MEMBERSHIP 21
+
+#define IN6ADDR_ANY_INIT       { { 0 } }
+#define IN6ADDR_LOOPBACK_INIT  { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } }
 
 #define INADDR_ANY       ((in_addr_t) 0x00000000u)
 #define INADDR_LOOPBACK  ((in_addr_t) 0x7F000001u)
