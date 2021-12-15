@@ -11,6 +11,13 @@
 #define PCI_CLASS_NETWORK 0x02
 #define PCI_SUBCLASS_ETHERNET 0x00
 
+#define PCI_CLASS_SERIAL_BUS    0x0C
+#define PCI_SUBCLASS_USB        0x03
+#define PCI_PROGIF_UHCI         0x00
+#define PCI_PROGIF_OHCI         0x10
+#define PCI_PROGIF_EHCI         0x20
+#define PCI_PROGIF_XHCI         0x30
+
 typedef struct {
     u16 vendor_id;
     u16 device_id;
