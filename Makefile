@@ -102,7 +102,13 @@ KERNEL_DRIVERS_SOURCES := \
 	src/drivers/storage/ata.c \
 	src/drivers/net/rtl8139.c \
 	src/drivers/net/virtio_net.c \
-	src/drivers/bus/pci.c
+	src/drivers/bus/pci.c \
+	src/drivers/usb/usb.c \
+	src/drivers/usb/uhci.c \
+	src/drivers/usb/usb_hub.c \
+	src/drivers/usb/usb_keyboard.c \
+	src/drivers/usb/usb_mouse.c \
+	src/drivers/usb/usb_storage.c
 
 KERNEL_C_SOURCES := \
 	$(KERNEL_CORE_SOURCES) \

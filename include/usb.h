@@ -5,6 +5,7 @@
 
 #define USB_MAX_DEVICES       16
 #define USB_MAX_CONFIG_BYTES  256
+#define USB_MAX_CLASS_DRIVERS 8
 
 #define USB_STATE_DEFAULT     0
 #define USB_STATE_ADDRESS     1
@@ -35,9 +36,9 @@
 #define USB_DESC_ENDPOINT    5
 #define USB_DESC_HID         0x21
 
-#define USB_CLASS_HUB        0x09
-#define USB_CLASS_HID        0x03
-#define USB_CLASS_MASS_STORAGE 0x08
+#define USB_CLASS_HUB             0x09
+#define USB_CLASS_HID             0x03
+#define USB_CLASS_MASS_STORAGE    0x08
 
 #define USB_ENDPOINT_OUT     0x00
 #define USB_ENDPOINT_IN      0x80
@@ -129,7 +130,17 @@ typedef struct {
     int (*reset_port)(usb_device_t *hub, u8 port);
 } usb_hcd_ops_t;
 
+typedef struct {
+    u8 class;
+    u8 subclass;
+    u8 protocol;
+    void (*probe)(usb_device_t *dev);
+} usb_class_driver_t;
+
 int  usb_init(void);
+int  usb_class_driver_register(const usb_class_driver_t *driver);
+void usb_probe_device(usb_device_t *dev);
+
 int  usb_device_add(usb_device_t *dev);
 void usb_device_remove(u8 address);
 usb_device_t *usb_device_get(u8 address);
@@ -142,9 +153,9 @@ int  usb_set_configuration(usb_device_t *dev, u8 config);
 int  usb_clear_halt(usb_device_t *dev, u8 endpoint);
 int  usb_reset_port(usb_device_t *hub, u8 port);
 
-void usb_hub_probe(usb_device_t *dev);
-void usb_hid_keyboard_probe(usb_device_t *dev);
-void usb_hid_mouse_probe(usb_device_t *dev);
-void usb_storage_probe(usb_device_t *dev);
+void usb_hub_init(void);
+void usb_keyboard_init(void);
+void usb_mouse_init(void);
+void usb_storage_init(void);
 
 #endif

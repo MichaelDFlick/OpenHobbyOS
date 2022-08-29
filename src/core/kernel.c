@@ -25,6 +25,7 @@
 #include "task.h"
 #include "thread.h"
 #include "swap.h"
+#include "usb.h"
 #include "vfs.h"
 
 static bool kernel_path_is_executable(const char *path) {
@@ -166,6 +167,12 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     netdev_init();
     rtl8139_init();
     virtio_net_init();
+
+    usb_init();
+    usb_hub_init();
+    usb_keyboard_init();
+    usb_mouse_init();
+    usb_storage_init();
 
     /* SMP/APIC initialization */
     ioapic_init();
