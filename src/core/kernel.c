@@ -220,27 +220,33 @@ void kernel_main(u32 magic, u32 mbi_addr) {
             console_printf("[init] installer exited with status %d\n", app_status);
         }
     }
-    console_printf("[init] launching shell...\n");
-    {
+    console_clear();
+    console_write("[init] starting login...\n\n");
+    for (;;) {
         memory_defragment();
         int app_status = -1;
-        if (kernel_path_is_executable("/bin/gosh")) {
+        if (kernel_path_is_executable("/bin/login")) {
+            const char *app_argv[] = {"/bin/login", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/login", 1, app_argv);
+            console_printf("\n[init] login exited with status %d\n", app_status);
+        } else if (kernel_path_is_executable("/bin/gosh")) {
             const char *app_argv[] = {"/bin/gosh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
-            console_printf("[init] gosh exited with status %d\n", app_status);
+            console_printf("\n[init] gosh exited with status %d\n", app_status);
         } else if (kernel_path_is_executable("/bin/sh")) {
             const char *app_argv[] = {"/bin/sh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/sh", 1, app_argv);
-            console_printf("[init] sh exited with status %d\n", app_status);
+            console_printf("\n[init] sh exited with status %d\n", app_status);
         } else if (kernel_path_is_executable("/bin/terminal")) {
             const char *app_argv[] = {"/bin/terminal", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/terminal", 1, app_argv);
-            console_printf("[init] terminal exited with status %d\n", app_status);
+            console_printf("\n[init] terminal exited with status %d\n", app_status);
         } else {
             console_printf("[init] no shell found, halting\n");
+            break;
         }
     }
-    console_write("[init] app exited, halting\n");
+    console_write("[init] halting\n");
     for (;;) {
         __asm__ volatile ("hlt");
     }

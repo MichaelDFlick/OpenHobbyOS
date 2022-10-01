@@ -46,6 +46,7 @@ ohos_rootfs_append_entries() {
     _out+=("$ROOT/build/user/net_info.elf::/bin/net_info")
     _out+=("$ROOT/build/user/ohloader.elf::/bin/ohloader")
     _out+=("$ROOT/build/user/ohpleasepanic.elf::/bin/ohpleasepanic")
+    _out+=("$ROOT/build/user/login.elf::/bin/login")
 
     if [[ -f "$ROOT/build/user/ohpkg_read.elf" ]]; then
         _out+=("$ROOT/build/user/ohpkg_read.elf::/bin/ohpkg-read")
