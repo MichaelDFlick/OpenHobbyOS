@@ -97,6 +97,14 @@ int sys_unlink(const char *path) {
     return syscall1(OHOS_SYS_UNLINK, (int)path);
 }
 
+int sys_link(const char *oldpath, const char *newpath) {
+    return syscall2(LINUX_SYS_LINK, (int)oldpath, (int)newpath);
+}
+
+int sys_rename(const char *oldpath, const char *newpath) {
+    return syscall2(LINUX_SYS_RENAME, (int)oldpath, (int)newpath);
+}
+
 int sys_lseek(int fd, int offset, int whence) {
     return syscall3(LINUX_SYS_LSEEK, fd, offset, whence);
 }

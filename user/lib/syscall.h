@@ -34,6 +34,8 @@ void *sys_mmap2(void *addr, unsigned int length, int prot, int flags, int fd, un
 int sys_munmap(void *addr, unsigned int length);
 int sys_stat(const char *path, struct linux_stat64 *stat);
 int sys_stat64(const char *path, struct linux_stat64 *stat);
+int sys_link(const char *oldpath, const char *newpath);
+int sys_rename(const char *oldpath, const char *newpath);
 int sys_unlink(const char *path);
 int sys_fstat64(int fd, struct linux_stat64 *stat);
 int sys_getdents64(int fd, void *buffer, unsigned int size);

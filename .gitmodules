@@ -56,3 +56,6 @@
 [submodule "user/lib/mbedtls"]
 	path = user/lib/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "user/coreutils"]
+	path = user/coreutils
+	url = https://github.com/coreutils/coreutils
