@@ -127,12 +127,46 @@ static int uhci_interrupt_transfer(usb_device_t *dev, u8 endpoint, void *data, u
     return -1;
 }
 
-static int uhci_bulk_transfer(usb_device_t *dev, u8 endpoint, void *data, u16 length) {
-    (void)dev;
-    (void)endpoint;
-    (void)data;
-    (void)length;
-    return -1;
+static int uhci_bulk_transfer(usb_device_t *usb_dev, u8 endpoint, void *data, u16 length) {
+    uhci_dev_t *dev = (uhci_dev_t *)usb_dev->hc_private;
+    if (!dev || !dev->initialized) return -1;
+
+    bool dir_in = (endpoint & USB_ENDPOINT_IN) != 0;
+    u8 ep_num = endpoint & 0x0F;
+
+    uhci_td_t *td = &dev->async_tds[0];
+    u32 td_phys = dev->async_td_phys;
+    u32 buf_phys = data ? virt_to_phys(data) : 0;
+
+    u32 data_pid = dir_in ? UHCI_PID_IN : UHCI_PID_OUT;
+    u32 data_token = (usb_dev->address & 0x7F) | ((u32)ep_num << 7) | (0 << 14) | (data_pid << 16);
+
+    u32 status_pid = dir_in ? UHCI_PID_OUT : UHCI_PID_IN;
+    u32 status_token = (usb_dev->address & 0x7F) | ((u32)ep_num << 7) | (1 << 14) | (status_pid << 16);
+
+    u32 data_link = (td_phys + sizeof(uhci_td_t)) | 2;
+    uhci_td_init(&td[0], data_link, data_token, buf_phys);
+    td[0].status = UHCI_TD_ACTIVE;
+
+    uhci_td_init(&td[1], 1, status_token, 0);
+    td[1].status = UHCI_TD_ACTIVE;
+
+    dev->async_qh->elp = td_phys;
+    outw(dev->io_base + UHCI_STS, 0x003F);
+    uhci_start(dev);
+
+    u32 timeout = 500000;
+    while (timeout--) {
+        if (!(td[0].status & UHCI_TD_ACTIVE)) break;
+        io_wait();
+    }
+
+    dev->async_qh->elp = 1;
+
+    if (timeout == 0) return -1;
+    if (td[0].status & UHCI_TD_STALLED) return -1;
+    if (td[0].status & UHCI_TD_BUFERR) return -1;
+    return 0;
 }
 
 static int uhci_reset_port(usb_device_t *hub, u8 port) {
