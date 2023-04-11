@@ -189,7 +189,7 @@ USER_LIB_SOURCES := \
 	user/lib/newlib-gloss.c \
 	user/lib/runtime.c
 
-USER_PROGRAMS := hello uname toolbox sh test_fb net_test net_info ohloader ohpleasepanic login coreutils
+USER_PROGRAMS := hello uname toolbox sh test_fb net_test net_info ohloader ohpleasepanic login
 
 define user_program_template
 USER_OBJECTS_$(1) := $(patsubst user/%.c,$(BUILD_DIR)/user/%.o,user/$(1).c) $$(patsubst user/lib/%.c,$(BUILD_DIR)/user/lib/%.o,$(USER_LIB_SOURCES))
@@ -314,9 +314,6 @@ $(BUILD_DIR)/user/ohpleasepanic.elf: $(USER_OBJECTS_ohpleasepanic) user.ld
 
 $(BUILD_DIR)/user/login.elf: $(USER_OBJECTS_login) user.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJECTS_login)
-
-$(BUILD_DIR)/user/coreutils.elf: $(USER_OBJECTS_coreutils) user.ld
-	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJECTS_coreutils)
 
 $(PORTS_SYSROOT)/.newlib.stamp: ports/newlib/build-newlib.sh $(NEWLIB_PORT_FILES) | $(PORTS_DIR)
 	ports/newlib/build-newlib.sh $(PORTS_DIR)/newlib $(PORTS_SYSROOT)
