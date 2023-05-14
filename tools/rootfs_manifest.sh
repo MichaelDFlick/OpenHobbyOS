@@ -127,6 +127,18 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/gears::/bin/gears")
     fi
 
+    if [[ -d "$ROOT/build/ports/sysroot/usr/bin" ]]; then
+        for coreutil in basename cat chmod cmp cp cut date dirname dd echo false \
+                        head hostname ln link logname ls mkdir mktemp mv nice nproc \
+                        od pathchk printf pwd readlink realpath rm rmdir seq sleep \
+                        sort stat sum sync tac tail tee test touch tr true truncate \
+                        uname uniq unlink wc whoami yes; do
+            if [[ -f "$ROOT/build/ports/sysroot/usr/bin/$coreutil" ]]; then
+                _out+=("$ROOT/build/ports/sysroot/usr/bin/$coreutil::/bin/$coreutil")
+            fi
+        done
+    fi
+
 
     if [[ -d "$ROOT/build/ports/sysroot/plugins/platforms" ]]; then
         for plugin in "$ROOT/build/ports/sysroot/plugins/platforms/"*.so; do

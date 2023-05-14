@@ -25,6 +25,7 @@ PORTS_GEARS_BIN := $(PORTS_SYSROOT)/bin/gears
 CAIRO_PC := $(PORTS_SYSROOT)/lib/pkgconfig/cairo.pc
 FREETYPE_PC := $(PORTS_SYSROOT)/lib/pkgconfig/freetype2.pc
 OHUI_LIB := $(PORTS_SYSROOT)/lib/libohui.a
+CORUTILS_BIN := $(PORTS_SYSROOT)/bin/cp
 QT_STAMP := $(PORTS_DIR)/qt/.built
 QTDECL_STAMP := $(PORTS_DIR)/qtdeclarative/.built
 QEMU := qemu-system-i386
@@ -375,10 +376,10 @@ $(QTDECL_STAMP): ports/qtdeclarative/build-qtdeclarative.sh $(QT_STAMP)
 	ports/qtdeclarative/build-qtdeclarative.sh $(PORTS_DIR)/qtdeclarative $(PORTS_SYSROOT) || true
 	touch $@
 
-$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD | $(BUILD_DIR)
+$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD | $(BUILD_DIR)
 	tools/build_initrd.sh $@
 
-$(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
+$(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
 	sudo env OPENHOBBYOS_ROOT="$(CURDIR)" "$(CURDIR)/tools/populate_disk.sh" "$(CURDIR)/$(DISK_IMG)"
 
 $(ISO): $(KERNEL) $(INITRD) grub/grub.cfg | $(BUILD_DIR)
@@ -428,11 +429,16 @@ ports-doom: $(PORTS_SYSROOT)/bin/doom
 $(PORTS_SYSROOT)/bin/doom: ports/doom/build-doom.sh $(PORTS_SYSROOT)/.newlib.stamp
 	ports/doom/build-doom.sh $(PORTS_DIR)/doom $(PORTS_SYSROOT)
 
+$(CORUTILS_BIN): ports/coreutils/build-coreutils.sh $(PORTS_SYSROOT)/.newlib.stamp user/coreutils/configure
+	ports/coreutils/build-coreutils.sh $(PORTS_DIR)/coreutils $(PORTS_SYSROOT)
+
 $(FFMPEG_STAMP): ports/ffmpeg/build-ffmpeg.sh $(PORTS_SYSROOT)/.newlib.stamp
 	ports/ffmpeg/build-ffmpeg.sh $(PORTS_DIR)/ffmpeg $(PORTS_SYSROOT)
 	touch $@
 
 ports-ffmpeg: $(FFMPEG_STAMP)
+
+ports-coreutils: $(CORUTILS_BIN)
 
 ports-tinygl: $(PORTS_TINYGL_A)
 
@@ -442,7 +448,7 @@ ports-qt: $(QT_STAMP)
 
 ports-qtdeclarative: $(QTDECL_STAMP)
 
-ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(TERMINAL_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC)
+ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(TERMINAL_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC) $(CORUTILS_BIN)
 
 run: run-gui
 
