@@ -36,6 +36,10 @@ export CC="${TARGET}-gcc"
 export CFLAGS="--sysroot=$SYSROOT -O2 -ffreestanding -fno-pic -fno-pie"
 export LDFLAGS="--sysroot=$SYSROOT -static -nostartfiles -lopenhobbyosgloss"
 
+# disable all runtime tests (cross-compile mode would work but some gnulib
+# tests still execute binaries; override to skip them entirely)
+sed -i 's/cross_compiling=maybe/cross_compiling=yes/' "$COREDIR/configure"
+
 cd "$BUILD_DIR"
 if [ ! -f Makefile ]; then
     "$COREDIR/configure" \
