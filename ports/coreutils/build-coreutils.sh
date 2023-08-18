@@ -51,5 +51,8 @@ if [ ! -f Makefile ]; then
         --disable-gcc-warnings \
         --enable-cross-guesses=risky
 fi
+
+# GL_CFLAG_GNULIB_WARNINGS leaks test source code under cross-compile; wipe it
+export GL_CFLAG_GNULIB_WARNINGS=
 make -j"$JOBS"
 make install DESTDIR="$SYSROOT"
