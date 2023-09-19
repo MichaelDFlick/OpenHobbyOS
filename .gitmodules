@@ -59,3 +59,24 @@
 [submodule "user/coreutils"]
 	path = user/coreutils
 	url = https://github.com/coreutils/coreutils
+[submodule "user/lib/gtk"]
+	path = user/lib/gtk
+	url = https://github.com/gnome/gtk
+[submodule "user/lib/glib"]
+	path = user/lib/glib
+	url = https://github.com/gnome/glib
+[submodule "user/lib/epoxy"]
+	path = user/lib/epoxy
+	url = https://github.com/anholt/libepoxy.git
+[submodule "user/lib/gdk-pixbuf"]
+	path = user/lib/gdk-pixbuf
+	url = https://gitlab.gnome.org/GNOME/gdk-pixbuf.git
+[submodule "user/lib/graphene"]
+	path = user/lib/graphene
+	url = https://github.com/ebassi/graphene.git
+[submodule "user/lib/harfbuzz"]
+	path = user/lib/harfbuzz
+	url = https://github.com/harfbuzz/harfbuzz
+[submodule "user/lib/pango"]
+	path = user/lib/pango
+	url = https://github.com/GNOME/pango
