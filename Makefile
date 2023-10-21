@@ -11,20 +11,29 @@ ZLIB_PC := $(PORTS_SYSROOT)/lib/pkgconfig/zlib.pc
 LIBSHA1_PC := $(PORTS_SYSROOT)/lib/pkgconfig/libsha1.pc
 LODEPNG_PC := $(PORTS_SYSROOT)/lib/pkgconfig/lodepng.pc
 PIXMAN_PC := $(PORTS_SYSROOT)/lib/pkgconfig/pixman-1.pc
+GLIB_PC := $(PORTS_SYSROOT)/lib/pkgconfig/glib-2.0.pc
+HARFBUZZ_PC := $(PORTS_SYSROOT)/lib/pkgconfig/harfbuzz.pc
+EXPAT_PC := $(PORTS_SYSROOT)/lib/pkgconfig/expat.pc
+FONTCONFIG_PC := $(PORTS_SYSROOT)/lib/pkgconfig/fontconfig.pc
+FRIBIDI_PC := $(PORTS_SYSROOT)/lib/pkgconfig/fribidi.pc
+PANGO_PC := $(PORTS_SYSROOT)/lib/pkgconfig/pango.pc
+GTK_PC := $(PORTS_SYSROOT)/lib/pkgconfig/gtk4.pc
+GDK_PIXBUF_PC := $(PORTS_SYSROOT)/lib/pkgconfig/gdk-pixbuf-2.0.pc
 FASTFETCH_BIN := $(PORTS_DIR)/fastfetch/install/usr/bin/fastfetch
 XNX_COMPOSITOR := $(PORTS_DIR)/xnx/install/bin/xnx-compositor
 INSTALLER_BIN := $(PORTS_SYSROOT)/bin/installer
 MILKYWAY_BIN := $(PORTS_SYSROOT)/bin/milkyway
-TERMINAL_BIN := $(PORTS_SYSROOT)/bin/terminal
+
 FFMPEG_STAMP := $(PORTS_DIR)/ffmpeg/.built
 OHPLAY_BIN := $(PORTS_DIR)/ohplay/install/bin/ohplay
 GOSH_BIN := $(PORTS_SYSROOT)/bin/gosh
+GTKDEMO_BIN := $(PORTS_SYSROOT)/bin/gtkdemo
 
 PORTS_TINYGL_A := $(PORTS_SYSROOT)/lib/libtinygl.a
 PORTS_GEARS_BIN := $(PORTS_SYSROOT)/bin/gears
 CAIRO_PC := $(PORTS_SYSROOT)/lib/pkgconfig/cairo.pc
 FREETYPE_PC := $(PORTS_SYSROOT)/lib/pkgconfig/freetype2.pc
-OHUI_LIB := $(PORTS_SYSROOT)/lib/libohui.a
+
 CORUTILS_BIN := $(PORTS_SYSROOT)/bin/cp
 QT_STAMP := $(PORTS_DIR)/qt/.built
 QTDECL_STAMP := $(PORTS_DIR)/qtdeclarative/.built
@@ -198,7 +207,7 @@ endef
 $(foreach prog,$(USER_PROGRAMS),$(eval $(call user_program_template,$(prog))))
 USER_BINS := $(addprefix $(BUILD_DIR)/user/,$(addsuffix .elf,$(USER_PROGRAMS)))
 
- .PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-ohui ports-xnx ports-installer ports-milkyway ports-terminal ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
+ .PHONY: all clean iso disk disk-img run run-gui run-debug run-with-disk run-disk ports ports-newlib ports-fastfetch ports-zlib ports-libsha1 ports-pixman ports-freetype ports-cairo ports-glib ports-harfbuzz ports-expat ports-fontconfig ports-fribidi ports-gdk-pixbuf ports-pango ports-xnx ports-installer ports-milkyway ports-gosh ports-lodepng ports-lwip ports-doom ports-tinygl ports-gears ports-ffmpeg ports-ohplay ports-qt ports-qtdeclarative
 
 all: $(ISO)
 
@@ -280,9 +289,6 @@ $(FREETYPE_PC): ports/freetype/build-freetype.sh $(PORTS_SYSROOT)/.newlib.stamp
 $(CAIRO_PC): ports/cairo/build-cairo.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(PIXMAN_PC) $(ZLIB_PC) $(FREETYPE_PC)
 	ports/cairo/build-cairo.sh $(PORTS_DIR)/cairo $(PORTS_SYSROOT)
 
-$(OHUI_LIB): ports/ohui/build-ohui.sh $(CAIRO_PC)
-	ports/ohui/build-ohui.sh $(PORTS_DIR)/ohui $(PORTS_SYSROOT)
-
 $(KERNEL): $(KERNEL_OBJECTS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJECTS) -L$(PORTS_SYSROOT)/lib
 
@@ -329,6 +335,30 @@ $(LIBSHA1_PC): ports/libsha1/build-libsha1.sh ports/libsha1/libsha1.c ports/libs
 $(PIXMAN_PC): ports/pixman/build-pixman.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(PORTS_SYSROOT)/.newlib.stamp
 	ports/pixman/build-pixman.sh $(PORTS_DIR)/pixman $(PORTS_SYSROOT)
 
+$(GLIB_PC): ports/glib/build-glib.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(PORTS_SYSROOT)/.newlib.stamp
+	ports/glib/build-glib.sh $(PORTS_DIR)/glib $(PORTS_SYSROOT)
+
+$(HARFBUZZ_PC): ports/harfbuzz/build-harfbuzz.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(FREETYPE_PC) $(GLIB_PC)
+	ports/harfbuzz/build-harfbuzz.sh $(PORTS_DIR)/harfbuzz $(PORTS_SYSROOT)
+
+$(EXPAT_PC): ports/expat/build-expat.sh ports/qt/openhobbyos-toolchain.cmake $(PORTS_SYSROOT)/.newlib.stamp
+	ports/expat/build-expat.sh $(PORTS_DIR)/expat $(PORTS_SYSROOT)
+
+$(FONTCONFIG_PC): ports/fontconfig/build-fontconfig.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(EXPAT_PC) $(FREETYPE_PC)
+	ports/fontconfig/build-fontconfig.sh $(PORTS_DIR)/fontconfig $(PORTS_SYSROOT)
+
+$(FRIBIDI_PC): ports/fribidi/build-fribidi.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(PORTS_SYSROOT)/.newlib.stamp
+	ports/fribidi/build-fribidi.sh $(PORTS_DIR)/fribidi $(PORTS_SYSROOT)
+
+$(PANGO_PC): ports/pango/build-pango.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(GLIB_PC) $(HARFBUZZ_PC) $(FONTCONFIG_PC) $(FRIBIDI_PC) $(FREETYPE_PC)
+	ports/pango/build-pango.sh $(PORTS_DIR)/pango $(PORTS_SYSROOT)
+
+$(GDK_PIXBUF_PC): ports/gdk-pixbuf/build-gdk-pixbuf.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(GLIB_PC)
+	ports/gdk-pixbuf/build-gdk-pixbuf.sh $(PORTS_DIR)/gdk-pixbuf $(PORTS_SYSROOT)
+
+$(GTK_PC): ports/gtk/build-gtk.sh ports/meson/openhobbyos.cross.in tools/ensure_meson.sh tools/meson-requirements.txt $(GDK_PIXBUF_PC) $(PANGO_PC) $(GLIB_PC) $(HARFBUZZ_PC) $(FONTCONFIG_PC) $(FRIBIDI_PC) $(FREETYPE_PC) $(CAIRO_PC) $(PIXMAN_PC) $(EXPAT_PC) $(XNX_COMPOSITOR)
+	ports/gtk/build-gtk.sh $(PORTS_DIR)/gtk $(PORTS_SYSROOT)
+
 $(FASTFETCH_BIN): ports/fastfetch/build-fastfetch.sh ports/fastfetch/openhobbyos-toolchain.cmake $(PORTS_SYSROOT)/.newlib.stamp
 	ports/fastfetch/build-fastfetch.sh $(PORTS_DIR)/fastfetch $(PORTS_SYSROOT)
 
@@ -350,15 +380,13 @@ $(MILKYWAY_BIN): $(MILKYWAY_SOURCES) $(PORTS_SYSROOT)/.newlib.stamp ports/milkyw
 	mkdir -p $(PORTS_DIR)/milkyway
 	ports/milkyway/build-milkyway.sh $(PORTS_DIR)/milkyway $(PORTS_SYSROOT)
 
-TERMINAL_SOURCES := $(wildcard user/terminal/*.c)
-$(TERMINAL_BIN): $(TERMINAL_SOURCES) $(CAIRO_PC) $(FREETYPE_PC) $(XNX_COMPOSITOR) ports/terminal/build-terminal.sh | $(PORTS_DIR)
-	mkdir -p $(PORTS_DIR)/terminal
-	ports/terminal/build-terminal.sh $(PORTS_DIR)/terminal $(PORTS_SYSROOT)
-
 $(GOSH_BIN): user/gosh.c user/lib/syscall.c user/lib/runtime.c $(CAIRO_PC) $(FREETYPE_PC) $(XNX_COMPOSITOR) ports/gosh/build-gosh.sh | $(PORTS_DIR)
 	mkdir -p $(PORTS_DIR)/gosh
 	ports/gosh/build-gosh.sh $(PORTS_DIR)/gosh $(PORTS_SYSROOT)
 
+$(GTKDEMO_BIN): user/gtkdemo/gtkdemo.c $(GTK_PC) $(XNX_COMPOSITOR) ports/gtkdemo/build-gtkdemo.sh | $(PORTS_DIR)
+	mkdir -p $(PORTS_DIR)/gtkdemo
+	ports/gtkdemo/build-gtkdemo.sh $(PORTS_DIR)/gtkdemo $(PORTS_SYSROOT)
 
 $(OHPLAY_BIN): ports/ohplay/build-ohplay.sh $(XNX_COMPOSITOR) $(FFMPEG_STAMP) $(ZLIB_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
 	ports/ohplay/build-ohplay.sh $(PORTS_DIR)/ohplay $(PORTS_SYSROOT)
@@ -376,7 +404,7 @@ $(QTDECL_STAMP): ports/qtdeclarative/build-qtdeclarative.sh $(QT_STAMP)
 	ports/qtdeclarative/build-qtdeclarative.sh $(PORTS_DIR)/qtdeclarative $(PORTS_SYSROOT) || true
 	touch $@
 
-$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(QT_STAMP) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD | $(BUILD_DIR)
+$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(GTKDEMO_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD | $(BUILD_DIR)
 	tools/build_initrd.sh $@
 
 $(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
@@ -401,11 +429,24 @@ ports-libsha1: $(LIBSHA1_PC)
 
 ports-pixman: $(PIXMAN_PC)
 
+ports-glib: $(GLIB_PC)
+
+ports-harfbuzz: $(HARFBUZZ_PC)
+
+ports-expat: $(EXPAT_PC)
+
+ports-fontconfig: $(FONTCONFIG_PC)
+
+ports-fribidi: $(FRIBIDI_PC)
+
+ports-gdk-pixbuf: $(GDK_PIXBUF_PC)
+ports-pango: $(PANGO_PC)
+
+ports-gtk: $(GTK_PC)
+
 ports-freetype: $(FREETYPE_PC)
 
 ports-cairo: $(CAIRO_PC)
-
-ports-ohui: $(OHUI_LIB)
 
 ports-xnx: $(XNX_COMPOSITOR)
 
@@ -413,11 +454,11 @@ ports-installer: $(INSTALLER_BIN)
 
 ports-milkyway: $(MILKYWAY_BIN)
 
-ports-terminal: $(TERMINAL_BIN)
-
 
 
 ports-gosh: $(GOSH_BIN)
+
+ports-gtkdemo: $(GTKDEMO_BIN)
 
 ports-ohplay: $(OHPLAY_BIN)
 
@@ -448,7 +489,7 @@ ports-qt: $(QT_STAMP)
 
 ports-qtdeclarative: $(QTDECL_STAMP)
 
-ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(TERMINAL_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC) $(CORUTILS_BIN)
+ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(GTKDEMO_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC) $(CORUTILS_BIN) $(EXPAT_PC) $(FONTCONFIG_PC) $(FRIBIDI_PC) $(PANGO_PC) $(GTK_PC)
 
 run: run-gui
 
