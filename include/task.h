@@ -7,22 +7,21 @@
 #include "vfs.h"
 #include "types.h"
 
-/* User space from 32MB to ~848MB.  The kernel identity-maps 0-896MB
- * (paging_init shares PDEs between identity and higher-half), so the
- * kernel heap can live anywhere below 896MB regardless of user range.
- * Large programs (e.g. Qt6 demo linked at 0x08048000 with image_end
- * ~154MB) fit easily.  USER_MMAP_BASE (= brk limit) must be above the
- * program's image_end or brk will always fail. */
+/* User space from 32MB to 3GB.  GLib/GTK hardcode 0x58000000 as mmap
+ * addresses for internal shared memory — the layout must match Linux-like
+ * user-space limits.  The kernel identity-maps 0-896MB and higher-half-maps
+ * the same range above 0xC0000000; user page directories have 768 PDEs
+ * covering 0-3GB. */
 #define USER_BASE      0x02000000u
-#define USER_LIMIT     0x38000000u
-#define USER_STACK_TOP 0x36100000u
-#define USER_TLS_ADDR  0x36100000u
+#define USER_LIMIT     0xC0000000u
+#define USER_STACK_TOP 0xBFF00000u
+#define USER_TLS_ADDR  0xBFF00000u
 #define USER_MMAP_BASE 0x20000000u
-#define USER_MMAP_TOP  0x34E00000u
+#define USER_MMAP_TOP  0xBE000000u
 
 /* Interpreter (dynamic linker) region — just below the stack. */
-#define INTERP_BASE    0x34F00000u
-#define INTERP_LIMIT   0x36000000u
+#define INTERP_BASE    0xBF000000u
+#define INTERP_LIMIT   0xBF800000u
 #define TASK_MAX_FDS   32
 #define TASK_MAX_MMAPS 16
 #define TASK_MAX_SLOTS 24

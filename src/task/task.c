@@ -1385,7 +1385,6 @@ static int task_seed_slot(task_slot_t *slot,
         }
     }
     page_directory_t *old_pd = page_directory_get_current();
-    (void)old_pd;
     bool elf_ok = elf_load_vfs_node(node, pd, USER_BASE, USER_LIMIT, &image);
 
     if (!elf_ok) {
@@ -1395,10 +1394,13 @@ static int task_seed_slot(task_slot_t *slot,
         return LERR_NOENT;
     }
 
+    console_printf("[spawn] '%s' ELF ok, mapping stack at %x-%x, frames free=%u\n",
+                   path, USER_STACK_TOP - 0x200000, USER_STACK_TOP, frame_free_count());
     /* Prepare user stack in new address space */
     /* Map user stack (2 MB for Qt6) */
     for (u32 va = USER_STACK_TOP - 0x200000; va < USER_STACK_TOP; va += PAGE_SIZE) {
         if (!paging_alloc_user_page(pd, va, PTE_RW | PTE_USER)) {
+            console_printf("[spawn] stack map FAIL at %x, frames free=%u\n", va, frame_free_count());
             page_directory_switch(old_pd);
             page_directory_destroy(pd);
             return LERR_NOMEM;
@@ -1467,41 +1469,44 @@ static int task_seed_slot(task_slot_t *slot,
 
     /* Switch to user page directory so TLS and stack writes go to
      * the correct physical pages. */
-    page_directory_switch(pd);
-
-    /* Allocate TLS page and set up per-task TLS */
-    if (!paging_alloc_user_page(pd, USER_TLS_ADDR, PTE_RW | PTE_USER)) {
-        page_directory_switch(old_pd);
-        page_directory_destroy(pd);
-        return LERR_NOMEM;
-    }
-
+    /* Map TLS pages and set up per-task TLS.  The TCB self-pointer lives at
+     * USER_TLS_ADDR + tls_memsz, so we need ceil((tls_memsz+4)/PAGE_SIZE) pages. */
     u32 tls_gs_base;
     u32 tls_memsz = image.tls_memsz;
+    u32 tls_total = (tls_memsz > 0) ? tls_memsz + 4 : 4;
+    u32 tls_pages = (tls_total + PAGE_SIZE - 1) / PAGE_SIZE;
 
+    console_printf("[spawn] TLS: memsz=%u total=%u pages=%u tls_vaddr=%x\n", tls_memsz, tls_total, tls_pages, image.tls_vaddr);
+    serial_write("[seed] about to switch PD\n");
+
+    page_directory_switch(pd);
+    serial_write("[seed] switched to user PD\n");
+    for (u32 p = 0; p < tls_pages; p++) {
+        u32 tls_addr = USER_TLS_ADDR + p * PAGE_SIZE;
+        if (!paging_alloc_user_page(pd, tls_addr, PTE_RW | PTE_USER)) {
+            console_printf("[spawn] TLS page map FAIL at %x\n", tls_addr);
+            page_directory_switch(old_pd);
+            page_directory_destroy(pd);
+            return LERR_NOMEM;
+        }
+    }
+
+    serial_write("[seed] TLS init\n");
     if (tls_memsz > 0) {
-        /* Copy initialized TLS data (.tdata) if present */
         if (image.tls_filesz > 0) {
             memcpy((void *)USER_TLS_ADDR, (void *)(uintptr_t)image.tls_vaddr, image.tls_filesz);
         }
-        /* Write self-pointer at TCB base (end of TLS data) */
         *(u32 *)(USER_TLS_ADDR + tls_memsz) = USER_TLS_ADDR + tls_memsz;
         tls_gs_base = USER_TLS_ADDR + tls_memsz;
     } else {
         tls_gs_base = USER_TLS_ADDR;
     }
 
-    /* Canary at %gs:0x14 */
     *(u32 *)(tls_gs_base + 0x14) = 0xFF0A0000;
-    slot->tls_vaddr = tls_gs_base;
 
-    /* Update GDT so %gs:0x14 resolves to the new TLS canary immediately.
-     * gdt_set_gs_base is normally called during task_slot_activate, but
-     * this task hasn't been scheduled yet — first execution comes from
-     * the syscall return path. */
-    gdt_set_gs_base(tls_gs_base);
-
+    serial_write("[seed] user stack\n");
     if (!task_prepare_user_stack(argc, argv, &user_stack)) {
+        console_printf("[spawn] stack prepare FAIL for '%s'\n", path);
         page_directory_switch(old_pd);
         page_directory_destroy(pd);
         return LERR_NOMEM;
@@ -1522,7 +1527,7 @@ static int task_seed_slot(task_slot_t *slot,
     slot->regs.es = 0x23;
     slot->regs.fs = 0x23;
     slot->regs.gs = USER_GS;
-    slot->regs.eip = current_task.entry;
+    slot->regs.eip = image.entry;
     slot->regs.cs = 0x1B;
     slot->regs.eflags = 0x202;
     slot->regs.useresp = user_stack;
@@ -1540,6 +1545,7 @@ static int task_seed_slot(task_slot_t *slot,
     slot->wait_status_ptr = 0;
     slot->wake_tick = 0;
 
+    slot->tls_vaddr = tls_gs_base;
     slot->canary = 0xCAFEBABE;
 
     if (!task_slot_save_state(slot, &slot->regs)) {
@@ -2533,8 +2539,17 @@ void *task_mmap(void *addr, size_t length, int prot, int flags, int fd, u32 page
 
     if ((flags & LINUX_MAP_FIXED) != 0) {
         base = align_down((u32)(uintptr_t)addr, TASK_PAGE_SIZE);
-        if (base < USER_MMAP_BASE || base + size > USER_MMAP_TOP || task_mapping_overlaps(base, size)) {
+        if (base < USER_MMAP_BASE || base + size > USER_MMAP_TOP) {
             return (void *)(uintptr_t)LERR_INVAL;
+        }
+        /* Linux MAP_FIXED semantics: silently unmap any existing mapping */
+        for (int j = 0; j < TASK_MAX_MMAPS; ++j) {
+            if (current_task.mappings[j].used &&
+                current_task.mappings[j].base < base + size &&
+                current_task.mappings[j].base + current_task.mappings[j].length > base) {
+                task_munmap((void *)(uintptr_t)current_task.mappings[j].base,
+                            current_task.mappings[j].length);
+            }
         }
     } else {
         for (base = USER_MMAP_TOP - size; base >= USER_MMAP_BASE; base -= TASK_PAGE_SIZE) {
@@ -2605,12 +2620,17 @@ void *task_mmap(void *addr, size_t length, int prot, int flags, int fd, u32 page
             }
         }
 
-        memset((void *)(uintptr_t)base, 0, size);
+        /* paging_alloc_user_page already zeros each page.  Switch to the
+         * user PD so file reads resolve correctly. */
+        page_directory_t *saved_pd = page_directory_get_current();
+        page_directory_switch(pd);
+        paging_flush_tlb();
         if (node) {
             u32 file_offset = page_offset * TASK_PAGE_SIZE;
             if (file_offset < vfs_file_size(node)) {
                 ssize_t copied = vfs_read(node, file_offset, (void *)(uintptr_t)base, size);
                 if (copied < 0) {
+                    page_directory_switch(saved_pd);
                     /* Cleanup on error */
                     for (u32 va = base; va < base + size; va += PAGE_SIZE) {
                         paging_free_user_page(pd, va);
@@ -2619,6 +2639,7 @@ void *task_mmap(void *addr, size_t length, int prot, int flags, int fd, u32 page
                 }
             }
         }
+        page_directory_switch(saved_pd);
     }
 
     memset(mapping, 0, sizeof(*mapping));
@@ -2652,7 +2673,7 @@ int task_munmap(void *addr, size_t length) {
 int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32 *user_envp, registers_t *regs) {
     char path[VFS_PATH_MAX];
     const char *argv[TASK_STACK_ARG_MAX];
-    char arg_storage[TASK_STACK_ARG_MAX][VFS_PATH_MAX];
+    char *arg_storage[TASK_STACK_ARG_MAX];
     int argc = 0;
     const vfs_node_t *node;
     elf_image_t image;
@@ -2671,6 +2692,8 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
 
     (void)user_envp;
 
+    memset(arg_storage, 0, sizeof(arg_storage));
+
     while (argc < TASK_STACK_ARG_MAX) {
         u32 user_arg = 0;
 
@@ -2678,33 +2701,48 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
             break;
         }
         if (!task_copy_from_user(&user_arg, user_argv + argc, sizeof(user_arg))) {
-            return LERR_FAULT;
+            goto fail;
         }
         if (user_arg == 0) {
             break;
         }
-        if (!task_copy_string_from_user(arg_storage[argc], sizeof(arg_storage[argc]), (const char *)(uintptr_t)user_arg)) {
-            return LERR_FAULT;
+        arg_storage[argc] = kmalloc(VFS_PATH_MAX);
+        if (!arg_storage[argc]) {
+            goto fail;
+        }
+        if (!task_copy_string_from_user(arg_storage[argc], VFS_PATH_MAX, (const char *)(uintptr_t)user_arg)) {
+            kfree(arg_storage[argc]);
+            arg_storage[argc] = NULL;
+            goto fail;
         }
         argv[argc] = arg_storage[argc];
         argc++;
     }
+    goto done;
 
+fail:
+    for (int i = 0; i < argc; i++) kfree(arg_storage[i]);
+    return LERR_FAULT;
+
+done:
     if (argc == 0) {
         argv[argc++] = path;
     }
 
     node = task_resolve_path_internal(current_task.cwd, path);
     if (!node || !vfs_is_file(node)) {
+        for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
         return LERR_NOENT;
     }
     if (!task_node_access_allowed(node, LINUX_X_OK) || !task_is_executable_node(node)) {
+        for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
         return LERR_ACCES;
     }
 
     /* Create new page directory */
     new_pd = page_directory_create();
     if (!new_pd) {
+        for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
         return LERR_NOMEM;
     }
 
@@ -2715,6 +2753,7 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
 
     if (!elf_ok) {
         page_directory_destroy(new_pd);
+        for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
         return LERR_NOENT;
     }
 
@@ -2723,6 +2762,7 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
         if (!paging_alloc_user_page(new_pd, va, PTE_RW | PTE_USER)) {
             page_directory_switch(old_pd);
             page_directory_destroy(new_pd);
+            for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
             return LERR_NOMEM;
         }
     }
@@ -2762,15 +2802,21 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
      * the correct physical pages. */
     page_directory_switch(new_pd);
 
-    /* Map TLS page and set up per-task TLS */
-    if (!paging_alloc_user_page(new_pd, USER_TLS_ADDR, PTE_RW | PTE_USER)) {
-        page_directory_switch(old_pd);
-        page_directory_destroy(new_pd);
-        return LERR_NOMEM;
-    }
-
+    /* Map TLS pages and set up per-task TLS.  The TCB self-pointer lives at
+     * USER_TLS_ADDR + tls_memsz, so we need ceil((tls_memsz+4)/PAGE_SIZE) pages. */
     u32 tls_gs_base;
     u32 tls_memsz = image.tls_memsz;
+    u32 tls_total = (tls_memsz > 0) ? tls_memsz + 4 : 4;
+    u32 tls_pages = (tls_total + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    for (u32 p = 0; p < tls_pages; p++) {
+        if (!paging_alloc_user_page(new_pd, USER_TLS_ADDR + p * PAGE_SIZE, PTE_RW | PTE_USER)) {
+            page_directory_switch(old_pd);
+            page_directory_destroy(new_pd);
+            for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
+            return LERR_NOMEM;
+        }
+    }
 
     if (tls_memsz > 0) {
         /* Copy initialized TLS data (.tdata) if present */
@@ -2790,6 +2836,7 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
     if (!task_prepare_user_stack(argc, argv, &user_stack)) {
         page_directory_switch(old_pd);
         page_directory_destroy(new_pd);
+        for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
         return LERR_NOMEM;
     }
 
@@ -2825,6 +2872,10 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
                             opt->entries[oj] &= ~PTE_ALLOCATED;
                         }
                     }
+                    /* Clear PTE_ALLOCATED on the PDE so page_directory_destroy
+                     * does NOT free the page table itself — it is shared with
+                     * the parent process and must remain valid for the parent. */
+                    opd->entries[opi] &= ~PTE_ALLOCATED;
                 }
             }
             /* Temporarily switch to new PD so we can destroy the old one safely */
@@ -2838,9 +2889,7 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
         }
         slot->tls_vaddr = tls_gs_base;
 
-        /* Update GDT so %gs:0x14 resolves to the new TLS canary.
-         * Without this, the stack protector check compares against the
-         * OLD process's canary and blows up with "stack smashing detected". */
+        /* Update GDT so %gs:0x14 resolves to the new TLS canary. */
         gdt_set_gs_base(tls_gs_base);
     }
 
@@ -2866,6 +2915,7 @@ int task_execve_from_user(const char *user_path, const u32 *user_argv, const u32
     regs->ss = 0x23;
 
     task_exit_code = 0;
+    for (int i = 0; i < TASK_STACK_ARG_MAX; i++) kfree(arg_storage[i]);
     return 0;
 }
 
@@ -2890,6 +2940,12 @@ static page_directory_t *page_directory_copy_cow(page_directory_t *src_pd) {
 
             u32 virt_addr = (pd_idx << 22) | (pt_idx << 12);
             u32 flags = entry_get_flags(src_pt->entries[pt_idx]);
+
+            /* Skip kernel-only pages — they are identity-mapped and
+             * must remain shared to avoid freeing kernel memory when
+             * the child's page directory is destroyed on exec. */
+            if (!(flags & PTE_USER)) continue;
+
             u32 phys = entry_get_phys(src_pt->entries[pt_idx]);
 
             /* Mark source as read-only if it was writable */
@@ -2964,7 +3020,7 @@ int task_spawn_from_user(const char *user_path, const u32 *user_argv) {
     registers_t syscall_regs;
     char path[VFS_PATH_MAX];
     const char *argv[TASK_STACK_ARG_MAX];
-    char arg_storage[TASK_STACK_ARG_MAX][VFS_PATH_MAX];
+    char *arg_storage[TASK_STACK_ARG_MAX];
     int argc = 0;
     int result;
 
@@ -2978,6 +3034,8 @@ int task_spawn_from_user(const char *user_path, const u32 *user_argv) {
         return LERR_FAULT;
     }
 
+    memset(arg_storage, 0, sizeof(arg_storage));
+
     while (argc < TASK_STACK_ARG_MAX) {
         u32 user_arg = 0;
 
@@ -2985,12 +3043,21 @@ int task_spawn_from_user(const char *user_path, const u32 *user_argv) {
             break;
         }
         if (!task_copy_from_user(&user_arg, user_argv + argc, sizeof(user_arg))) {
+            for (int i = 0; i < argc; i++) kfree(arg_storage[i]);
             return LERR_FAULT;
         }
         if (user_arg == 0) {
             break;
         }
-        if (!task_copy_string_from_user(arg_storage[argc], sizeof(arg_storage[argc]), (const char *)(uintptr_t)user_arg)) {
+        arg_storage[argc] = kmalloc(VFS_PATH_MAX);
+        if (!arg_storage[argc]) {
+            for (int i = 0; i < argc; i++) kfree(arg_storage[i]);
+            return LERR_NOMEM;
+        }
+        if (!task_copy_string_from_user(arg_storage[argc], VFS_PATH_MAX, (const char *)(uintptr_t)user_arg)) {
+            kfree(arg_storage[argc]);
+            arg_storage[argc] = NULL;
+            for (int i = 0; i < argc; i++) kfree(arg_storage[i]);
             return LERR_FAULT;
         }
         argv[argc] = arg_storage[argc];
@@ -3003,10 +3070,12 @@ int task_spawn_from_user(const char *user_path, const u32 *user_argv) {
 
     parent_state = current_task;
     if (!idt_last_user_syscall_frame(&syscall_regs) || !task_slot_save_state(parent, &syscall_regs)) {
+        for (int i = 0; i < argc; i++) kfree(arg_storage[i]);
         return LERR_NOMEM;
     }
 
     result = task_spawn_kernel(&parent_state, path, argc, argv);
+    for (int i = 0; i < argc; i++) kfree(arg_storage[i]);
     task_slot_activate(parent);
     return result;
 }

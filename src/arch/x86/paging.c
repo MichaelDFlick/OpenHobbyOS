@@ -141,26 +141,9 @@ page_directory_t *page_directory_create(void) {
             pd->entries[i] = kernel_page_directory->entries[i];
         }
 
-        /*
-         * Eagerly map physical page 0 with user read/write permission so
-         * programs (gosh, Qt6, etc.) can read legacy IVT/BDA data without
-         * triggering a NULL page fault.  We allocate a private page table
-         * for PDE[0] (replacing the shared kernel identity PT), copy the
-         * existing kernel identity PTEs, then set PTE_USER on PTE[0].
-         */
-        if ((pd->entries[0] & PTE_PRESENT) && !(pd->entries[0] & PTE_ALLOCATED)) {
-            u32 old_pt_phys = entry_get_phys(pd->entries[0]);
-            page_table_t *old_pt = ptable_ptr(old_pt_phys);
-
-            u32 pt_phys = frame_alloc();
-            if (pt_phys) {
-                page_table_t *pt = ptable_ptr(pt_phys);
-                memcpy(pt, old_pt, sizeof(page_table_t));
-                pt->entries[0] = entry_create(0, PTE_PRESENT | PTE_USER | PTE_RW);
-                pd->entries[0] = entry_create(pt_phys,
-                    PTE_PRESENT | PTE_RW | PTE_ALLOCATED | PTE_USER);
-            }
-        }
+        /* PDE[0] stays as the shared kernel identity PT.
+         * User access to addresses < 0x1000 triggers a fault and
+         * the handler below kills the task (SIGSEGV). */
     }
 
     return pd;
@@ -668,19 +651,46 @@ static bool handle_demand_anon(page_directory_t *pd, u32 virt_addr, bool for_wri
  * Page Fault Handler
  */
 
-/* 
+/*
  * The God-forsaken Page Fault Handler.
  * If we're here, either the user screwed up, or the kernel is trying to do 
  * something clever (like COW or demand paging). Or, more likely, I've 
  * fundamentally misunderstood how x86 paging works today.
  */
+
+/*
+ * Recursion guard: if console_printf (via TSM rendering) triggers another
+ * page fault, we must not re-enter the full console path.  Use serial I/O
+ * only and kill the task immediately.
+ */
+static volatile int pf_handler_depth = 0;
+
 void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
     bool present = error_code & PF_ERR_PRESENT;
     bool rw = error_code & PF_ERR_RW;
     bool user = error_code & PF_ERR_USER;
     bool reserved = error_code & PF_ERR_RESERVED;
     bool fetch = error_code & PF_ERR_FETCH;
-    
+
+    /* Recursion guard — if we're already inside the handler, the TSM /
+     * framebuffer console path is faulting.  Switch to kernel PD, use serial
+     * output only, and kill the task immediately. */
+    if (pf_handler_depth > 0) {
+        page_directory_switch(kernel_page_directory);
+        serial_write("[page_fault] RECURSIVE at ");
+        /* Print faulting address in hex */
+        for (int i = 28; i >= 0; i -= 4) {
+            u8 nib = (virt_addr >> i) & 0xF;
+            serial_write_char(nib < 10 ? '0' + nib : 'a' + nib - 10);
+        }
+        serial_write("\n");
+        if (task_is_active()) {
+            task_exit_current(-11); /* SIGSEGV */
+        }
+        for (;;) { __asm__ volatile ("cli; hlt"); }
+    }
+    pf_handler_depth++;
+
     /* Pull the current PD. If this returns NULL, we're already dead. */
     page_directory_t *pd = page_directory_get_current();
     
@@ -739,65 +749,14 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
     }
     
     /*
-     * Legacy NULL page compatibility for programs like Qt6.
-     * Some programs (notably Qt6 platform init) read from and write to
-     * addresses 0x0000–0x0FFF (legacy IVT/BDA probe).  The kernel
-     * identity-maps physical page 0 but without PTE_USER, so the first
-     * user access faults.  We catch these faults and map the page with
-     * full user read/write permission on demand.
-     *
-     * We map the REAL physical page 0 — the kernel does not rely on
-     * legacy IVT/BDA data at runtime and uses its own GDT/IDT, so
-     * allowing user writes to this page is safe on this system.
-     *
-     * IMPORTANT: The kernel is linked at 1 MB and runs identity-mapped
-     * through PDE[0].  When we replace PDE[0] we must preserve ALL
-     * existing kernel identity mappings (kernel code/data, etc.) —
-     * otherwise the TLB will eventually evict the stale entries and
-     * the next kernel instruction fetch blows up with a triple fault.
+     * NULL page access (address < 0x1000) from user mode — kill the task.
+     * This is the standard SIGSEGV behavior for null pointer dereferences.
      */
     if (present && user && virt_addr < 0x1000) {
-        console_printf("[page_fault] NULL page compat: va=%x pd=%p PDE=%x\n",
-                       virt_addr, (void*)pd, pd->entries[0]);
-        u32 null_pd_idx = virt_to_pd_index(virt_addr);
-        if (!(pd->entries[null_pd_idx] & PTE_ALLOCATED)) {
-            console_printf("[page_fault] NULL page: allocating private PT\n");
-            u32 old_pt_phys = entry_get_phys(pd->entries[null_pd_idx]);
-            page_table_t *old_pt = ptable_ptr(old_pt_phys);
-
-            u32 new_pt_phys = frame_alloc();
-            if (!new_pt_phys) {
-                console_printf("[page_fault] NULL page: frame_alloc failed!\n");
-                goto unhandled;
-            }
-
-            page_table_t *new_pt = ptable_ptr(new_pt_phys);
-            memcpy(new_pt, old_pt, sizeof(page_table_t));
-
-            /* Allow user read/write access to NULL page (physical page 0).
-             * Don't set PTE_ALLOCATED — physical page 0 is not ours to free. */
-            new_pt->entries[0] = entry_create(0, PTE_PRESENT | PTE_USER | PTE_RW);
-
-            pd->entries[null_pd_idx] = entry_create(new_pt_phys,
-                PTE_PRESENT | PTE_RW | PTE_ALLOCATED | PTE_USER);
-
-            /* Full TLB flush — PDE[0] changed completely */
-            console_printf("[page_fault] NULL page mapped (private PT, kernel mappings preserved)\n");
-            paging_flush_tlb();
-            return;
-        }
-
-        /* PDE[0] already has a private PT — ensure PTE[0] has user access.
-         * This path handles the case where the eager mapping at PD creation
-         * failed (OOM) or for PDs created before the fix was applied. */
-        u32 pt_phys = entry_get_phys(pd->entries[null_pd_idx]);
-        page_table_t *pt = ptable_ptr(pt_phys);
-        if (!(pt->entries[0] & PTE_USER)) {
-            pt->entries[0] = entry_create(0, PTE_PRESENT | PTE_USER | PTE_RW);
-            paging_invalidate_tlb(virt_addr);
-            console_printf("[page_fault] NULL page: PTE[0] upgraded to user\n");
-        }
-        return;
+        console_printf("[page_fault] NULL page access (SIGSEGV): va=%x\n", virt_addr);
+        task_exit_current(-11); /* 11 = SIGSEGV */
+        /* task_exit_current is NORETURN — compiler may warn, but we're done */
+        for (;;) { __asm__ volatile ("cli; hlt"); }
     }
 
     /*
@@ -935,8 +894,38 @@ unhandled:
     }
 
 unhandled_log:
-    
-    /* Log the fault and kill the process */
+    /* Dump page table state for debugging */
+    {
+        u32 pd_idx = virt_to_pd_index(virt_addr);
+        u32 pt_idx = virt_to_pt_index(virt_addr);
+        u32 pde = pd->entries[pd_idx];
+        serial_write("[pf] PDE[");
+        /* print pd_idx */
+        { char buf[8]; int len = 0; u32 v = pd_idx; if(v==0){buf[len++]='0';} else{while(v){buf[len++]='0'+v%10;v/=10;}}
+          for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
+        serial_write("]=");
+        { char buf[11]; int len=0; u32 v=pde; if(v==0){buf[len++]='0';} else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}}
+          for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
+        if (pde & PTE_PRESENT) {
+            u32 pt_phys = entry_get_phys(pde);
+            page_table_t *pt = ptable_ptr(pt_phys);
+            u32 pte = pt->entries[pt_idx];
+            serial_write(" PTE[");
+            { char buf[8]; int len = 0; u32 v = pt_idx; if(v==0){buf[len++]='0';} else{while(v){buf[len++]='0'+v%10;v/=10;}}
+              for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
+            serial_write("]=");
+            { char buf[11]; int len=0; u32 v=pte; if(v==0){buf[len++]='0';} else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}}
+              for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
+        } else {
+            serial_write(" NOT_PRESENT");
+        }
+        serial_write(" pd=");
+        { char buf[11]; int len=0; u32 v=(u32)(uintptr_t)pd; if(v==0){buf[len++]='0';} else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}}
+          for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
+        serial_write("\n");
+    }
+
+    /* Log the fault concisely, then kill the faulting task */
     console_printf("[page_fault] %s at %x by %s (%s%s%s)\n",
                    present ? "protection violation" : "page not present",
                    virt_addr,
@@ -945,50 +934,23 @@ unhandled_log:
                    reserved ? "reserved-bit " : "",
                    fetch ? "fetch " : "");
 
-    /* Dump PDE/PTE for debugging */
-    {
-        page_directory_t *dbg_pd = page_directory_get_current();
-        u32 dbg_pd_idx = virt_to_pd_index(virt_addr);
-        u32 dbg_pt_idx = virt_to_pt_index(virt_addr);
-        console_printf("[page_fault] PD=%p idx=%u PDE=%x (phys=%x flags=%x)\n",
-                       (void*)dbg_pd, dbg_pd_idx,
-                       dbg_pd ? dbg_pd->entries[dbg_pd_idx] : 0,
-                       dbg_pd ? entry_get_phys(dbg_pd->entries[dbg_pd_idx]) : 0,
-                       dbg_pd ? entry_get_flags(dbg_pd->entries[dbg_pd_idx]) : 0);
-        if (dbg_pd && (dbg_pd->entries[dbg_pd_idx] & PTE_PRESENT)) {
-            u32 dbg_pt_phys = entry_get_phys(dbg_pd->entries[dbg_pd_idx]);
-            page_table_t *dbg_pt = ptable_ptr(dbg_pt_phys);
-            console_printf("[page_fault] PT phys=%x PTE[%u]=%x (phys=%x flags=%x)\n",
-                           dbg_pt_phys, dbg_pt_idx,
-                           dbg_pt->entries[dbg_pt_idx],
-                           entry_get_phys(dbg_pt->entries[dbg_pt_idx]),
-                           entry_get_flags(dbg_pt->entries[dbg_pt_idx]));
-        }
+    /*
+     * Switch to the kernel page directory before killing the task.
+     * The fault may have occurred while the user PD was active (e.g.
+     * during a syscall).  task_abort_from_trap calls console_printf
+     * and console_hexdump which touch kernel data structures that
+     * might not be mapped in every user PD.  Using the kernel PD
+     * guarantees full access to all kernel memory for the cleanup
+     * path.
+     */
+    page_directory_switch(kernel_page_directory);
 
-        /* Dump instruction bytes at faulting EIP */
-        if (regs) {
-            u8 dbg_instr[16];
-            u32 dbg_eip = regs->eip;
-            for (int ii = 0; ii < 16; ii++) {
-                if (page_is_present(NULL, dbg_eip + ii)) {
-                    dbg_instr[ii] = *(volatile u8 *)(uintptr_t)(dbg_eip + ii);
-                } else {
-                    dbg_instr[ii] = 0;
-                }
-            }
-            console_printf("[page_fault] instr at %x:", dbg_eip);
-            for (int ii = 0; ii < 16; ii++) {
-                console_printf(" %02x", dbg_instr[ii]);
-            }
-            console_printf("\n");
-            console_printf("[page_fault] user_eax=%x ecx=%x edx=%x ebx=%x esi=%x edi=%x ebp=%x\n",
-                           regs->eax, regs->ecx, regs->edx, regs->ebx,
-                           regs->esi, regs->edi, regs->ebp);
-        }
-    }
-    
     if (user && task_is_active()) {
         task_abort_from_trap(regs, "page fault");
+    } else if (task_is_active()) {
+        /* Kernel-mode fault during a user task (e.g. mmap syscall).
+         * Kill the task rather than panicking the whole kernel. */
+        task_abort_from_trap(regs, "page fault (kernel)");
     } else {
         panic("Kernel page fault at %x", virt_addr);
     }

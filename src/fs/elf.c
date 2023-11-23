@@ -142,6 +142,8 @@ bool elf_load_vfs_node(const vfs_node_t *node, page_directory_t *pd,
         return false;
     }
 
+    memset(image, 0, sizeof(*image));
+
     backing = vfs_backing_file(node);
     if (backing) {
         bytes = backing->data;
