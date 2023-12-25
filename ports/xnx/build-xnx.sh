@@ -117,4 +117,18 @@ build_compositor
 build_client_lib
 build_demo
 
+# Generate pkg-config file
+mkdir -p "$SYSROOT/lib/pkgconfig"
+cat > "$SYSROOT/lib/pkgconfig/xnx.pc" << EOF
+prefix=/
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: xnx
+Description: XNX compositor client library
+Version: 1.0.0
+Libs: -L\${libdir} -lxnx
+Cflags: -I\${includedir}
+EOF
+
 echo "XNX built successfully"

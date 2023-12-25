@@ -20,6 +20,21 @@
 #define READ_BUF_SIZE XNX_MAX_MESSAGE_BYTES
 #define FRAME_INTERVAL_MS 16
 
+/* ---- Window Manager constants ---- */
+#define TITLE_BAR_H    28
+#define BORDER_W       2
+#define MOVE_STEP      32
+#define CLOSE_BTN_SIZE 16
+
+/* Decoration colours (ARGB) */
+#define COL_DESK_BG       0xFF1A1A2E
+#define COL_TITLE_BG      0xFF2D3B4D
+#define COL_TITLE_FG      0xFFFFFFFF
+#define COL_BORDER        0xFF555555
+#define COL_BORDER_FOCUS  0xFF4A9EFF
+#define COL_CLOSE_BTN     0xFFCC4444
+#define COL_CLOSE_HOVER   0xFFEE6666
+
 struct xnx_surface {
     uint32_t id;
     int client_fd;
@@ -70,6 +85,49 @@ static int pointer_x;
 static int pointer_y;
 static uint8_t cursor_type = 1;
 static int cursor_visible;
+
+/* ---- Window Manager state ---- */
+static int dragging_surface_id = -1;
+static int drag_offset_x = 0;
+static int drag_offset_y = 0;
+static uint8_t super_held = 0;
+static uint8_t shift_held = 0;
+
+/* ---- Embedded 8x16 bitmap font ---- */
+#include "wm_font.h"
+
+static void draw_char(int x, int y, char ch, uint32_t fg, uint32_t bg) {
+    unsigned char glyph = (unsigned char)ch;
+    for (int row = 0; row < WM_FONT_H; row++) {
+        unsigned char bits = wm_font[glyph * WM_FONT_H + row];
+        for (int col = 0; col < WM_FONT_W; col++) {
+            int px = x + col, py = y + row;
+            if (px < 0 || px >= fb_width || py < 0 || py >= fb_height) continue;
+            uint32_t color = (bits & (0x80 >> col)) ? fg : bg;
+            fb_pixels[py * fb_width + px] = color;
+        }
+    }
+}
+
+static void draw_string(int x, int y, const char *text, uint32_t fg, uint32_t bg) {
+    while (*text) {
+        draw_char(x, y, *text, fg, bg);
+        x += WM_FONT_W;
+        text++;
+    }
+}
+
+static void fill_rect(int rx, int ry, int rw, int rh, uint32_t colour) {
+    for (int row = 0; row < rh; row++) {
+        int py = ry + row;
+        if (py < 0 || py >= fb_height) continue;
+        for (int col = 0; col < rw; col++) {
+            int px = rx + col;
+            if (px < 0 || px >= fb_width) continue;
+            fb_pixels[py * fb_width + px] = colour;
+        }
+    }
+}
 
 static void draw_cursor(void) {
     if (!cursor_visible || !fb_pixels || mouse_fd < 0) return;
@@ -191,11 +249,13 @@ static int create_surf(struct xnx_client *cl, uint32_t w, uint32_t h, uint32_t *
     return 0;
 }
 
-/* ---- Compositing ---- */
+/* ---- Compositing with decorations ---- */
 
 static void composite_surfaces(void) {
     if (!framebuffer || !fb_pixels) return;
-    memset(fb_pixels, 0, fb_size);
+
+    /* Desktop background */
+    fill_rect(0, 0, fb_width, fb_height, COL_DESK_BG);
 
     int z = 0;
     while (1) {
@@ -207,10 +267,57 @@ static void composite_surfaces(void) {
         }
         if (!next) break;
 
+        int focused = (next->id == focused_surface_id);
+
+        /* Window content position */
         int dx = next->x, dy = next->y, sx = 0, sy = 0;
         unsigned int sw = next->width, sh = next->height;
         int w = (int)sw, h = (int)sh;
 
+        /* Title bar coordinates */
+        int tb_x = dx - BORDER_W;
+        int tb_y = dy - TITLE_BAR_H - BORDER_W;
+        int tb_w = (int)sw + 2 * BORDER_W;
+        int tb_h = TITLE_BAR_H;
+
+        /* Border coordinates (full decoration rectangle) */
+        int brd_x = dx - BORDER_W;
+        int brd_y = dy - TITLE_BAR_H - BORDER_W;
+        int brd_w = (int)sw + 2 * BORDER_W;
+        int brd_h = (int)sh + TITLE_BAR_H + 2 * BORDER_W;
+
+        uint32_t brd_col = focused ? COL_BORDER_FOCUS : COL_BORDER;
+
+        /* Draw border */
+        fill_rect(brd_x, brd_y, brd_w, BORDER_W, brd_col);
+        fill_rect(brd_x, brd_y + brd_h - BORDER_W, brd_w, BORDER_W, brd_col);
+        fill_rect(brd_x, brd_y, BORDER_W, brd_h, brd_col);
+        fill_rect(brd_x + brd_w - BORDER_W, brd_y, BORDER_W, brd_h, brd_col);
+
+        /* Draw title bar */
+        fill_rect(tb_x + BORDER_W, tb_y, tb_w - 2 * BORDER_W, tb_h, COL_TITLE_BG);
+
+        /* Title text */
+        int text_x = tb_x + BORDER_W + 8;
+        int text_y = tb_y + (TITLE_BAR_H - WM_FONT_H) / 2;
+        if (text_y < tb_y) text_y = tb_y;
+        draw_string(text_x, text_y, next->title, COL_TITLE_FG, COL_TITLE_BG);
+
+        /* Close button (red square, top-right) */
+        int cb_x = tb_x + tb_w - BORDER_W - CLOSE_BTN_SIZE - 4;
+        int cb_y = tb_y + (TITLE_BAR_H - CLOSE_BTN_SIZE) / 2;
+        fill_rect(cb_x, cb_y, CLOSE_BTN_SIZE, CLOSE_BTN_SIZE, COL_CLOSE_BTN);
+        /* X mark on close button */
+        for (int i = 2; i < CLOSE_BTN_SIZE - 2; i++) {
+            int px1 = cb_x + i, px2 = cb_x + CLOSE_BTN_SIZE - 1 - i;
+            int py1 = cb_y + i, py2 = cb_y + i;
+            if (px1 >= 0 && px1 < fb_width && py1 >= 0 && py1 < fb_height)
+                fb_pixels[py1 * fb_width + px1] = COL_TITLE_FG;
+            if (px2 >= 0 && px2 < fb_width && py2 >= 0 && py2 < fb_height)
+                fb_pixels[py2 * fb_width + px2] = COL_TITLE_FG;
+        }
+
+        /* Clip compositing to window content area */
         if (dx < 0) { sx = -dx; w += dx; dx = 0; }
         if (dy < 0) { sy = -dy; h += dy; dy = 0; }
         if (dx >= fb_width || dy >= fb_height || sx >= (int)sw || sy >= (int)sh) { z = next->z_order + 1; continue; }
@@ -456,6 +563,27 @@ int main(void) {
         if (stdin_idx >= 0 && (fds[stdin_idx].revents & POLLIN)) {
             unsigned char ch;
             if (read(STDIN_FILENO, &ch, 1) == 1) {
+                /* Track modifier keys for WM shortcuts */
+                if (ch == 0x2D || ch == 0xDD) super_held = (ch == 0x2D) ? 1 : 0; /* L-Alt/AltGr */
+                if (ch == 0x2A || ch == 0x36) shift_held = 1;
+                if (ch == 0xAA || ch == 0xB6) shift_held = 0;
+
+                /* Super+Shift+Arrow: move focused window */
+                if (super_held && shift_held) {
+                    ensure_focus();
+                    struct xnx_surface *s = find_surf(focused_surface_id);
+                    if (s) {
+                        int moved = 0;
+                        switch (ch) {
+                            case 0x48: s->y -= MOVE_STEP; moved = 1; break; /* Up */
+                            case 0x50: s->y += MOVE_STEP; moved = 1; break; /* Down */
+                            case 0x4B: s->x -= MOVE_STEP; moved = 1; break; /* Left */
+                            case 0x4D: s->x += MOVE_STEP; moved = 1; break; /* Right */
+                        }
+                        if (moved) continue; /* Don't forward the key */
+                    }
+                }
+
                 ensure_focus();
                 struct xnx_surface *s = find_surf(focused_surface_id);
                 if (s) {
@@ -473,24 +601,76 @@ int main(void) {
                 if (pointer_x >= fb_width) pointer_x = fb_width - 1;
                 if (pointer_y >= fb_height) pointer_y = fb_height - 1;
 
-                /* Click-to-focus: on button press, find surface under cursor and focus it */
                 static uint8_t prev_buttons = 0;
                 int pressed = (mp.buttons & 1) && !(prev_buttons & 1);
+                int released = !(mp.buttons & 1) && (prev_buttons & 1);
                 prev_buttons = mp.buttons;
 
+                /* Drag-to-move: if dragging, update surface position */
+                if (dragging_surface_id >= 0 && mp.buttons & 1) {
+                    struct xnx_surface *ds = find_surf((uint32_t)dragging_surface_id);
+                    if (ds) {
+                        ds->x = pointer_x - drag_offset_x;
+                        ds->y = pointer_y - drag_offset_y;
+                    }
+                }
+                if (dragging_surface_id >= 0 && released) {
+                    dragging_surface_id = -1;
+                }
+
                 if (pressed) {
+                    /* Find surface under cursor (top-most) */
+                    struct xnx_surface *hit = NULL;
                     for (int i = num_surfaces - 1; i >= 0; --i) {
                         if (!surfaces[i].visible || !surfaces[i].image) continue;
                         int sx = surfaces[i].x, sy = surfaces[i].y;
                         int sw = (int)surfaces[i].width, sh = (int)surfaces[i].height;
-                        if (pointer_x >= sx && pointer_x < sx + sw && pointer_y >= sy && pointer_y < sy + sh) {
-                            focus_surf(&surfaces[i]);
+                        /* Check full decoration area including title bar */
+                        int full_x = sx - BORDER_W;
+                        int full_y = sy - TITLE_BAR_H - BORDER_W;
+                        int full_w = sw + 2 * BORDER_W;
+                        int full_h = sh + TITLE_BAR_H + 2 * BORDER_W;
+                        if (pointer_x >= full_x && pointer_x < full_x + full_w &&
+                            pointer_y >= full_y && pointer_y < full_y + full_h) {
+                            hit = &surfaces[i];
                             break;
                         }
                     }
+
+                    if (hit) {
+                        focus_surf(hit);
+
+                        /* Check close button */
+                        int tb_x = hit->x - BORDER_W;
+                        int tb_y = hit->y - TITLE_BAR_H - BORDER_W;
+                        int tb_w = (int)hit->width + 2 * BORDER_W;
+                        int cb_x = tb_x + tb_w - BORDER_W - CLOSE_BTN_SIZE - 4;
+                        int cb_y = tb_y + (TITLE_BAR_H - CLOSE_BTN_SIZE) / 2;
+                        if (pointer_x >= cb_x && pointer_x < cb_x + CLOSE_BTN_SIZE &&
+                            pointer_y >= cb_y && pointer_y < cb_y + CLOSE_BTN_SIZE) {
+                            /* Close: send close request then destroy */
+                            struct xnx_surface *s = find_surf(hit->id);
+                            if (s) {
+                                send_msg(s->client_fd, XNX_CLOSE_REQUEST, NULL, 0);
+                                drop_surf(hit->id);
+                            }
+                        }
+                        /* Check title bar for drag-to-move */
+                        else if (pointer_y < hit->y &&
+                                 pointer_x >= hit->x - BORDER_W &&
+                                 pointer_x < hit->x + (int)hit->width + BORDER_W) {
+                            dragging_surface_id = (int)hit->id;
+                            drag_offset_x = pointer_x - hit->x;
+                            drag_offset_y = pointer_y - hit->y;
+                        }
+                    } else {
+                        /* Click on desktop — unfocus */
+                        focused_surface_id = 0;
+                        ensure_focus();
+                    }
                 }
 
-                /* Forward pointer event to focused surface */
+                /* Forward pointer event to focused surface (adjusted for decorations) */
                 ensure_focus();
                 struct xnx_surface *s = find_surf(focused_surface_id);
                 if (s) {

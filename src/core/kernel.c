@@ -47,11 +47,6 @@ static void start_xnx_compositor(void) {
                    stats_after.heap_used / 1024, stats_after.heap_free / 1024,
                    memory_largest_free_block() / 1024);
 
-    if (kernel_path_is_executable("/bin/gosh")) {
-        console_printf("[init] gosh owns framebuffer, skipping compositor\n");
-        return;
-    }
-
     if (kernel_path_is_executable("/bin/xnx-compositor")) {
         int pid = task_spawn_background("/bin/xnx-compositor");
         console_printf("[init] XNX compositor spawn: pid=%d\n", pid);
@@ -90,12 +85,12 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     gdt_init(&cpus[0], (uintptr_t)&stack_top);
     pic_remap();
     idt_init();
-    apic_init();
     pit_init(100);
     keyboard_init();
     mouse_init();
     memory_init(mbi, (uintptr_t)&__kernel_end);
     paging_init(mbi, memory_total_bytes(), (uintptr_t)&__kernel_end);
+    apic_init();
 
     cpu_detect();
     console_activate();
@@ -210,6 +205,20 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     console_putc('\n');
 
     console_clear();
+    console_clear();
+    console_printf("[init] launching gtkdemo...\n");
+    {
+        memory_defragment();
+        int app_status = -1;
+        if (kernel_path_is_executable("/bin/gtkdemo")) {
+            const char *app_argv[] = {"/bin/gtkdemo", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/gtkdemo", 1, app_argv);
+            console_printf("[init] gtkdemo exited with status %d\n", app_status);
+        } else {
+            console_printf("[init] gtkdemo not found\n");
+        }
+    }
+    console_clear();
     console_printf("[init] launching installer...\n");
     {
         memory_defragment();
@@ -233,14 +242,14 @@ void kernel_main(u32 magic, u32 mbi_addr) {
             const char *app_argv[] = {"/bin/gosh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
             console_printf("\n[init] gosh exited with status %d\n", app_status);
+        } else if (kernel_path_is_executable("/bin/login")) {
+            const char *app_argv[] = {"/bin/gosh", NULL};
+            app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
+            console_printf("\n[init] gosh exited with status %d\n", app_status);
         } else if (kernel_path_is_executable("/bin/sh")) {
             const char *app_argv[] = {"/bin/sh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/sh", 1, app_argv);
             console_printf("\n[init] sh exited with status %d\n", app_status);
-        } else if (kernel_path_is_executable("/bin/terminal")) {
-            const char *app_argv[] = {"/bin/terminal", NULL};
-            app_status = task_run_argv_alongside(NULL, "/bin/terminal", 1, app_argv);
-            console_printf("\n[init] terminal exited with status %d\n", app_status);
         } else {
             console_printf("[init] no shell found, halting\n");
             break;
