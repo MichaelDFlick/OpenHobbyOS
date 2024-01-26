@@ -156,6 +156,19 @@ int _gettimeofday(struct timeval *tv, void *tz) {
     return ret;
 }
 
+/* initstate - BSD random state initialization (stub for fontconfig compat) */
+char *initstate(unsigned seed, char *state, size_t n) {
+    (void)seed;
+    (void)state;
+    (void)n;
+    return state;
+}
+
+/* setstate - BSD random state switching (stub for fontconfig compat) */
+char *setstate(char *state) {
+    return state;
+}
+
 /* _times - get process times */
 clock_t _times(struct tms *buf) {
     return -1;  /* Not implemented (sorry not sorry) */

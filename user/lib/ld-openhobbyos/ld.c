@@ -264,7 +264,7 @@ static lib_t *load_library(const char *path)
                 /* mmap the whole file to get a base */
                 u32 map_size = align_up(ph->filesz, 4096);
                 void *m = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, ph->offset / 4096);
-                if (m == (void *)-1) {
+                if ((long)m < 0) {
                     close(fd);
                     return NULL;
                 }
@@ -291,13 +291,13 @@ static lib_t *load_library(const char *path)
 
             if (ehdr.type == ET_EXEC) {
                 void *m = mmap((void *)vaddr, memsz, prot | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, file_offset / 4096);
-                if (m == (void *)-1) {
+                if ((long)m < 0) {
                     close(fd);
                     return NULL;
                 }
             } else {
                 void *m = mmap((void *)vaddr, memsz, prot | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, file_offset / 4096);
-                if (m == (void *)-1) {
+                if ((long)m < 0) {
                     close(fd);
                     return NULL;
                 }
@@ -318,7 +318,7 @@ static lib_t *load_library(const char *path)
 
     /* Allocate and fill lib_t */
     lib_t *lib = (lib_t *)(unsigned long)mmap(NULL, sizeof(lib_t), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (lib == (void *)-1) return NULL;
+    if ((long)lib < 0) return NULL;
     lib->base = bias;
     lib->load_end = load_end;
     lib->dyn_vaddr = dyn_vaddr;

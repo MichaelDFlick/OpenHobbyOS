@@ -507,12 +507,43 @@ static int sys_getcwd(registers_t *regs) {
 }
 
 static int sys_mmap2(registers_t *regs) {
-    return (int)(uintptr_t)task_mmap((void *)(uintptr_t)regs->ebx,
-                                     regs->ecx,
-                                     (int)regs->edx,
-                                     (int)regs->esi,
-                                     (int)regs->edi,
-                                     regs->ebp);
+    void *addr = (void *)(uintptr_t)regs->ebx;
+    u32 length = regs->ecx;
+    int prot = (int)regs->edx;
+    int flags = (int)regs->esi;
+    int fd = (int)regs->edi;
+    u32 page_offset = regs->ebp;
+
+    /* Debug: trace mmap in 0x58000000 range */
+    u32 addr_v = (u32)(uintptr_t)addr;
+    if (addr_v >= 0x58000000 && addr_v < 0x58100000) {
+        serial_write("[mmap2] addr=");
+        { char buf[11]; int len=0; u32 v=addr_v; if(v==0){buf[len++]='0';}else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}} for(int i=len-1;i>=0;i--)serial_write_char(buf[i]); }
+        serial_write(" len=");
+        { char buf[11]; int len=0; u32 v=length; if(v==0){buf[len++]='0';}else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}} for(int i=len-1;i>=0;i--)serial_write_char(buf[i]); }
+        serial_write(" flags=");
+        { char buf[11]; int len=0; u32 v=flags; if(v==0){buf[len++]='0';}else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}} for(int i=len-1;i>=0;i--)serial_write_char(buf[i]); }
+        serial_write(" fd=");
+        { char buf[11]; int len=0; u32 v=fd; if(v==0){buf[len++]='0';}else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}} for(int i=len-1;i>=0;i--)serial_write_char(buf[i]); }
+        serial_write("\n");
+    }
+
+    void *result = task_mmap(addr, length, prot, flags, fd, page_offset);
+
+    /* Debug: trace mmap result */
+    if (addr_v >= 0x58000000 && addr_v < 0x58100000) {
+        u32 rv = (u32)(uintptr_t)result;
+        serial_write("[mmap2] -> ");
+        if ((rv >> 28) == 0xF) { /* Looks like negative error */
+            serial_write("ERROR ");
+            { char buf[11]; int len=0; u32 v=rv; if(v==0){buf[len++]='0';}else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}} for(int i=len-1;i>=0;i--)serial_write_char(buf[i]); }
+        } else {
+            { char buf[11]; int len=0; u32 v=rv; if(v==0){buf[len++]='0';}else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}} for(int i=len-1;i>=0;i--)serial_write_char(buf[i]); }
+        }
+        serial_write("\n");
+    }
+
+    return (int)(uintptr_t)result;
 }
 
 static int sys_stat64(registers_t *regs) {

@@ -126,11 +126,9 @@ extern cpu_t cpus[MAX_CPUS];
 extern u32 cpu_count;
 extern u32 current_cpu_id;
 
-/* Get current CPU pointer (uses GS segment) */
+/* Get current CPU pointer (single-CPU: return &cpus[0] directly) */
 static inline cpu_t *this_cpu(void) {
-    cpu_t *p;
-    __asm__ ("movl %%gs:0, %0" : "=r"(p));
-    return p;
+    return &cpus[0];
 }
 
 /* Get current CPU number */

@@ -10,7 +10,7 @@
 #define USER_DS    0x23
 #define TSS_SEL    0x28
 #define USER_GS    0x33
-#define KERNEL_GS  0x3B
+#define KERNEL_GS  0x38
 
 void gdt_init(cpu_t *cpu, uintptr_t kernel_stack_top);
 void gdt_set_kernel_stack(uintptr_t kernel_stack_top);
