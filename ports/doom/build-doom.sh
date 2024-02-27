@@ -19,7 +19,7 @@ CC="$TARGET-gcc"
 AR="$TARGET-ar"
 
 CFLAGS="--sysroot=$SYSROOT -O2 -ffreestanding -fno-pic -fno-pie"
-CFLAGS="$CFLAGS -I$DOOM_SRC"
+CFLAGS="$CFLAGS -I$DOOM_SRC -I$SYSROOT/include"
 CFLAGS="$CFLAGS -DNORMALUNIX -DLINUX -DSNDSERV -D_DEFAULT_SOURCE"
 CFLAGS="$CFLAGS -DFILES_DIR='\"/\"'"
 
@@ -62,6 +62,7 @@ echo "  LD    doom"
     -lc \
     -lgcc \
     -lm \
+    -lxnx \
     -Wl,--end-group \
     -lopenhobbyosgloss \
     -Wl,--allow-multiple-definition

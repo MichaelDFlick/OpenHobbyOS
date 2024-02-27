@@ -6,37 +6,16 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/time.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
 
-#define FBIOGET_VSCREENINFO 0x4600
+#include <xnx/xnx.h>
+#include <xnx/protocol.h>
 
-struct fb_bitfield {
-    uint32_t offset;
-    uint32_t length;
-    uint32_t msb_right;
-};
-
-struct fb_var_screeninfo {
-    uint32_t xres;
-    uint32_t yres;
-    uint32_t xres_virtual;
-    uint32_t yres_virtual;
-    uint32_t xoffset;
-    uint32_t yoffset;
-    uint32_t bits_per_pixel;
-    uint32_t grayscale;
-    struct fb_bitfield red;
-    struct fb_bitfield green;
-    struct fb_bitfield blue;
-    struct fb_bitfield transp;
-    uint32_t pitch;
-};
-
-static int FrameBufferFd = -1;
-static uint8_t *FrameBuffer = NULL;
-static int KeyboardFd = -1;
+static xnx_conn_t *s_xnx = NULL;
+static uint32_t s_surface_id = 0;
+static uint32_t s_SurfaceWidth = DOOMGENERIC_RESX;
+static uint32_t s_SurfaceHeight = DOOMGENERIC_RESY;
 
 #define KEYQUEUE_SIZE 16
 
@@ -44,17 +23,8 @@ static unsigned short s_KeyQueue[KEYQUEUE_SIZE];
 static unsigned int s_KeyQueueWriteIndex = 0;
 static unsigned int s_KeyQueueReadIndex = 0;
 
-static unsigned int s_ScreenWidth = 0;
-static unsigned int s_ScreenHeight = 0;
-static unsigned int s_Pitch = 0;
-static unsigned int s_BytesPerPixel = 0;
-
-static int s_PosX = 0;
-static int s_PosY = 0;
-static int s_CtrlPressed = 0;
-
-static unsigned char convertToDoomKey(unsigned char scancode) {
-    switch (scancode) {
+static unsigned char convertToDoomKey(uint32_t keycode) {
+    switch (keycode) {
     case 0x1C: case 0x9C: return KEY_ENTER;
     case 0x01: return KEY_ESCAPE;
     case 0x4B: case 0xCB: return KEY_LEFTARROW;
@@ -65,12 +35,13 @@ static unsigned char convertToDoomKey(unsigned char scancode) {
     case 0x39: return KEY_USE;
     case 0x2A: case 0x36: return KEY_RSHIFT;
     case 0x15: return 'y';
+    case 0x31: return 'n';
     default: return 0;
     }
 }
 
-static void addKeyToQueue(int pressed, unsigned char keyCode) {
-    unsigned char key = convertToDoomKey(keyCode);
+static void addKeyToQueue(int pressed, uint32_t keycode) {
+    unsigned char key = convertToDoomKey(keycode);
     if (key == 0) return;
     unsigned short keyData = (pressed << 8) | key;
     s_KeyQueue[s_KeyQueueWriteIndex] = keyData;
@@ -78,81 +49,56 @@ static void addKeyToQueue(int pressed, unsigned char keyCode) {
 }
 
 void DG_Init() {
-    FrameBufferFd = open("/dev/fb0", O_RDWR);
-    if (FrameBufferFd < 0) {
-        fprintf(stderr, "doom: failed to open /dev/fb0\n");
+    s_xnx = xnx_connect(XNX_SOCKET_PATH);
+    if (!s_xnx) {
+        fprintf(stderr, "doom: failed to connect to compositor\n");
         exit(1);
     }
 
-    struct fb_var_screeninfo vinfo;
-    if (ioctl(FrameBufferFd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
-        fprintf(stderr, "doom: FBIOGET_VSCREENINFO failed\n");
+    uint32_t disp_w, disp_h;
+    if (xnx_get_display_info(s_xnx, &disp_w, &disp_h) < 0) {
+        fprintf(stderr, "doom: failed to get display info\n");
         exit(1);
     }
 
-    s_ScreenWidth = vinfo.xres;
-    s_ScreenHeight = vinfo.yres;
-    s_BytesPerPixel = (vinfo.bits_per_pixel + 7u) / 8u;
-    s_Pitch = vinfo.pitch;
-
-    printf("doom: framebuffer %dx%d %dbpp pitch=%u\n",
-           s_ScreenWidth, s_ScreenHeight, vinfo.bits_per_pixel, s_Pitch);
-
-    unsigned int fb_size = s_Pitch * s_ScreenHeight;
-    FrameBuffer = (uint8_t *)mmap(NULL, fb_size,
-                                   PROT_READ | PROT_WRITE, MAP_SHARED,
-                                   FrameBufferFd, 0);
-    if (FrameBuffer == MAP_FAILED) {
-        fprintf(stderr, "doom: mmap framebuffer failed\n");
+    if (xnx_create_surface(s_xnx, DOOMGENERIC_RESX, DOOMGENERIC_RESY, &s_surface_id) < 0) {
+        fprintf(stderr, "doom: failed to create surface\n");
         exit(1);
     }
 
-    KeyboardFd = open("/dev/keyboard", O_RDONLY);
-    if (KeyboardFd < 0) {
-        fprintf(stderr, "doom: failed to open /dev/keyboard\n");
-    }
+    xnx_set_title(s_xnx, s_surface_id, "DOOM");
+    xnx_commit(s_xnx, s_surface_id);
 
-    s_PosX = (s_ScreenWidth - DOOMGENERIC_RESX) / 2;
-    s_PosY = (s_ScreenHeight - DOOMGENERIC_RESY) / 2;
+    printf("doom: surface %u created, %dx%d (display %ux%u)\n",
+           s_surface_id, DOOMGENERIC_RESX, DOOMGENERIC_RESY, disp_w, disp_h);
 }
 
-static void handleKeyInput() {
-    if (KeyboardFd < 0) return;
+static void handleXnxEvents(void) {
+    if (!s_xnx) return;
 
-    unsigned char scancode = 0;
-    while (read(KeyboardFd, &scancode, 1) == 1) {
-        unsigned char released = (scancode & 0x80) != 0;
-        unsigned char key = scancode & 0x7F;
-
-        if (key == 0x1D) {
-            s_CtrlPressed = !released;
+    struct xnx_event ev;
+    while (xnx_poll_event(s_xnx, &ev) == 0) {
+        switch (ev.type) {
+        case XNX_EVENT_KEY:
+            if (ev.data.key.surface_id == s_surface_id) {
+                addKeyToQueue(ev.data.key.pressed, ev.data.key.keycode);
+            }
+            break;
+        case XNX_EVENT_POINTER:
+            break;
+        default:
+            break;
         }
-
-        if (key == 0x2E && !released && s_CtrlPressed) {
-            printf("doom: Ctrl+C pressed, exiting\n");
-            exit(0);
-        }
-
-        addKeyToQueue(!released, key);
     }
 }
 
 void DG_DrawFrame() {
-    if (FrameBuffer) {
-        for (int i = 0; i < DOOMGENERIC_RESY; i++) {
-            uint8_t *dst = FrameBuffer + (i + s_PosY) * s_Pitch + s_PosX * s_BytesPerPixel;
-            uint32_t *src = DG_ScreenBuffer + i * DOOMGENERIC_RESX;
-            for (int j = 0; j < DOOMGENERIC_RESX; j++) {
-                uint32_t pixel = src[j];
-                dst[j * s_BytesPerPixel + 0] = (uint8_t)(pixel >> 0);
-                dst[j * s_BytesPerPixel + 1] = (uint8_t)(pixel >> 8);
-                dst[j * s_BytesPerPixel + 2] = (uint8_t)(pixel >> 16);
-                if (s_BytesPerPixel > 3)
-                    dst[j * s_BytesPerPixel + 3] = (uint8_t)(pixel >> 24);
-            }
-        }
+    if (s_xnx && DG_ScreenBuffer) {
+        xnx_write_buffer(s_xnx, s_surface_id, 0, 0,
+                         DOOMGENERIC_RESX, DOOMGENERIC_RESY, DG_ScreenBuffer);
+        xnx_commit(s_xnx, s_surface_id);
     }
-    handleKeyInput();
+    handleXnxEvents();
 }
 
 void DG_SleepMs(uint32_t ms) {
@@ -166,6 +112,8 @@ uint32_t DG_GetTicksMs() {
 }
 
 int DG_GetKey(int *pressed, unsigned char *doomKey) {
+    handleXnxEvents();
+
     if (s_KeyQueueReadIndex == s_KeyQueueWriteIndex) return 0;
 
     unsigned short keyData = s_KeyQueue[s_KeyQueueReadIndex];
@@ -176,23 +124,16 @@ int DG_GetKey(int *pressed, unsigned char *doomKey) {
 }
 
 void DG_SetWindowTitle(const char *title) {
-    (void)title;
+    if (s_xnx && s_surface_id && title) {
+        xnx_set_title(s_xnx, s_surface_id, title);
+    }
 }
 
 extern int myargc;
 extern char **myargv;
 
 int main(int argc, char **argv) {
-    fprintf(stderr, "doom: main argc=%d argv[0]=%s\n", argc, argv[0] ? argv[0] : "NULL");
-    for (int i = 0; i <= argc; i++) {
-        fprintf(stderr, "doom: argv[%d]=%p\n", i, (void*)argv[i]);
-    }
     doomgeneric_Create(argc, argv);
-    fprintf(stderr, "doom: after create, myargc=%d myargv=%p\n", myargc, (void*)myargv);
-    for (int i = 0; i <= myargc; i++) {
-        fprintf(stderr, "doom: myargv[%d]=%p\n", i, (void*)myargv[i]);
-    }
-    fprintf(stderr, "doom: entering main loop\n");
     while (1) {
         doomgeneric_Tick();
     }
