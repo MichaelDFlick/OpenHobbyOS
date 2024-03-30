@@ -77,8 +77,8 @@ static void pixel_clear(uint32_t color) {
 
 
 
-static void write_ch(char ch) { write(1, &ch, 1); }
-static void write_str(const char *s) { write(1, s, (int)u_strlen(s)); }
+static void write_ch(char ch) { sys_write(1, &ch, 1); }
+static void write_str(const char *s) { sys_write(1, s, (int)u_strlen(s)); }
 
 struct gosh_fb_bitfield { uint32_t offset, length, msb_right; };
 struct gosh_fb_vinfo {
@@ -326,84 +326,73 @@ static int read_line_common(char *buf, int max, int use_history,
     redraw(buf, pos, cursor, redraw_ctx);
     int esc_state = 0;
     for (;;) {
-        struct pollfd pfd;
-        pfd.fd = 0;
-        pfd.events = POLLIN;
-        pfd.revents = 0;
-        int ret = poll(&pfd, 1, 100);
-        if (ret < 0) return -1;
-        if (ret > 0 && (pfd.revents & POLLIN)) {
-            unsigned char ch;
-            if (read(0, &ch, 1) == 1) {
-                if (esc_state == 0 && ch == 27) { esc_state = 1; continue; }
-                if (esc_state == 1) {
-                    if (ch == '[' || ch == 'O') { esc_state = 2; continue; }
-                    esc_state = 0; continue;
-                }
-                if (esc_state == 2) {
-                    esc_state = 0;
-                    if (ch == 'A' && use_history) {
-                        if (history_index > MAX(0, g_hist_count - HIST_MAX)) {
-                            if (history_index == g_hist_count) { u_strcpy(current_line_backup, buf); has_backup = 1; }
-                            history_index--;
-                            u_strcpy(buf, g_history[history_index % HIST_MAX]);
-                            pos = (int)u_strlen(buf); cursor = pos;
-                            redraw(buf, pos, cursor, redraw_ctx);
-                        } continue;
-                    }
-                    if (ch == 'B' && use_history) {
-                        if (history_index < g_hist_count) {
-                            history_index++;
-                            if (history_index == g_hist_count) {
-                                if (has_backup) u_strcpy(buf, current_line_backup);
-                                else buf[0] = '\0';
-                            } else { u_strcpy(buf, g_history[history_index % HIST_MAX]); }
-                            pos = (int)u_strlen(buf); cursor = pos;
-                            redraw(buf, pos, cursor, redraw_ctx);
-                        } continue;
-                    }
-                    if (ch == 'C') { if (cursor < pos) { cursor++; redraw(buf, pos, cursor, redraw_ctx); } continue; }
-                    if (ch == 'D') { if (cursor > 0) { cursor--; redraw(buf, pos, cursor, redraw_ctx); } continue; }
-                    if (ch == 'H' || ch == '1') { if (ch == '1') esc_state = 3; else { cursor = 0; redraw(buf, pos, cursor, redraw_ctx); } continue; }
-                    if (ch == 'F' || ch == '4') { if (ch == '4') esc_state = 3; else { cursor = pos; redraw(buf, pos, cursor, redraw_ctx); } continue; }
-                    if (ch == '3') { esc_state = 3; continue; }
-                    continue;
-                }
-                if (esc_state == 3) {
-                    esc_state = 0;
-                    if (ch == '~') {
-                        if (cursor < pos) {
-                            for (int i = cursor; i < pos - 1; ++i) buf[i] = buf[i + 1];
-                            pos--; buf[pos] = '\0';
-                            redraw(buf, pos, cursor, redraw_ctx);
-                        } continue;
-                    } continue;
-                }
-                if (ch == '\n' || ch == '\r') {
-                    buf[pos] = '\0';
-                    write(1, "\n", 1);
-                    if (use_history) hist_add(buf);
-                    return pos;
-                }
-                if (ch == 127 || ch == 8) {
-                    if (cursor > 0) {
-                        for (int i = cursor - 1; i < pos - 1; ++i) buf[i] = buf[i + 1];
-                        cursor--; pos--; buf[pos] = '\0';
-                        redraw(buf, pos, cursor, redraw_ctx);
-                    } continue;
-                }
-                if (ch >= 32) {
-                    if (pos >= max - 1) continue;
-                    if (cursor == pos) { buf[pos++] = (char)ch; cursor = pos; buf[pos] = '\0'; }
-                    else {
-                        for (int i = pos; i > cursor; --i) buf[i] = buf[i - 1];
-                        buf[cursor] = (char)ch; pos++; cursor++; buf[pos] = '\0';
-                    }
+        unsigned char ch;
+        if (sys_read(0, &ch, 1) != 1) return -1;
+        if (esc_state == 0 && ch == 27) { esc_state = 1; continue; }
+        if (esc_state == 1) {
+            if (ch == '[' || ch == 'O') { esc_state = 2; continue; }
+            esc_state = 0; continue;
+        }
+        if (esc_state == 2) {
+            esc_state = 0;
+            if (ch == 'A' && use_history) {
+                if (history_index > MAX(0, g_hist_count - HIST_MAX)) {
+                    if (history_index == g_hist_count) { u_strcpy(current_line_backup, buf); has_backup = 1; }
+                    history_index--;
+                    u_strcpy(buf, g_history[history_index % HIST_MAX]);
+                    pos = (int)u_strlen(buf); cursor = pos;
                     redraw(buf, pos, cursor, redraw_ctx);
-                }
+                } continue;
             }
-        } else {
-            sys_sched_yield();
+            if (ch == 'B' && use_history) {
+                if (history_index < g_hist_count) {
+                    history_index++;
+                    if (history_index == g_hist_count) {
+                        if (has_backup) u_strcpy(buf, current_line_backup);
+                        else buf[0] = '\0';
+                    } else { u_strcpy(buf, g_history[history_index % HIST_MAX]); }
+                    pos = (int)u_strlen(buf); cursor = pos;
+                    redraw(buf, pos, cursor, redraw_ctx);
+                } continue;
+            }
+            if (ch == 'C') { if (cursor < pos) { cursor++; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+            if (ch == 'D') { if (cursor > 0) { cursor--; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+            if (ch == 'H' || ch == '1') { if (ch == '1') esc_state = 3; else { cursor = 0; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+            if (ch == 'F' || ch == '4') { if (ch == '4') esc_state = 3; else { cursor = pos; redraw(buf, pos, cursor, redraw_ctx); } continue; }
+            if (ch == '3') { esc_state = 3; continue; }
+            continue;
+        }
+        if (esc_state == 3) {
+            esc_state = 0;
+            if (ch == '~') {
+                if (cursor < pos) {
+                    for (int i = cursor; i < pos - 1; ++i) buf[i] = buf[i + 1];
+                    pos--; buf[pos] = '\0';
+                    redraw(buf, pos, cursor, redraw_ctx);
+                } continue;
+            } continue;
+        }
+        if (ch == '\n' || ch == '\r') {
+            buf[pos] = '\0';
+            sys_write(1, "\n", 1);
+            if (use_history) hist_add(buf);
+            return pos;
+        }
+        if (ch == 127 || ch == 8) {
+            if (cursor > 0) {
+                for (int i = cursor - 1; i < pos - 1; ++i) buf[i] = buf[i + 1];
+                cursor--; pos--; buf[pos] = '\0';
+                redraw(buf, pos, cursor, redraw_ctx);
+            } continue;
+        }
+        if (ch >= 32) {
+            if (pos >= max - 1) continue;
+            if (cursor == pos) { buf[pos++] = (char)ch; cursor = pos; buf[pos] = '\0'; }
+            else {
+                for (int i = pos; i > cursor; --i) buf[i] = buf[i - 1];
+                buf[cursor] = (char)ch; pos++; cursor++; buf[pos] = '\0';
+            }
+            redraw(buf, pos, cursor, redraw_ctx);
         }
     }
 }
@@ -724,32 +713,21 @@ int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv;
     g_envp = envp; g_last_exit = 0; g_exit_code = 0; g_hist_count = 0; g_hist_pos = 0;
 
-    if (display_init() < 0) return 1;
-
     const char *env_user = gosh_get_user();
-    if (env_user && *env_user && u_strcmp(env_user, "root") != 0) {
+    if (env_user && *env_user) {
         gosh_set_user(env_user);
     }
 
-    for (;;) {
-        if (!g_logged_in) {
-            char login_user[32] = {0};
-            login_screen(login_user, sizeof(login_user));
-            gosh_set_user(login_user);
-            write_str("GOSH! v2.0 - OpenHobbyOS Shell\n");
-            write_str("Type 'help' for available commands.\n");
-        }
+    write_str("GOSH! v2.0 - OpenHobbyOS Shell\n");
+    write_str("Type 'help' for available commands.\n");
 
-        char line[LINE_MAX];
-        for (;;) {
-            maybe_emit_separator(); show_prompt();
-            int len = read_line(line, sizeof(line));
-            if (len < 0) break;
-            execute_line(line);
-            if (g_last_exit < 0) break;
-        }
-        if (g_exit_code == 0 && g_last_exit == -1 && g_logged_in) {
-            return 0;
-        }
+    char line[LINE_MAX];
+    for (;;) {
+        maybe_emit_separator(); show_prompt();
+        int len = read_line(line, sizeof(line));
+        if (len < 0) break;
+        execute_line(line);
+        if (g_last_exit < 0) break;
     }
+    return 0;
 }

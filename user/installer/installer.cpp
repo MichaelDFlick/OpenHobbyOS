@@ -91,9 +91,9 @@ struct Installer {
     void live_boot(void) {
         clear_screen();
         u_puts("Starting Live Boot...\n\n");
-        const char *argv[] = {"/bin/gosh", 0};
-        sys_execve("/bin/gosh", (char *const *)argv, 0);
-        u_puts("Failed to start gosh!\n");
+        const char *argv[] = {"/bin/login", 0};
+        sys_execve("/bin/login", (char *const *)argv, 0);
+        u_puts("Failed to start login!\n");
     }
 
     int confirm_destructive(void) {

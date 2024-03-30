@@ -96,9 +96,15 @@ int main(int argc, char **argv, char **envp) {
 
         if (ret == 0) {
             write_str("\n");
-            const char *shell_argv[] = {"/bin/sh", NULL};
-            const char *shell_envp[] = {"PATH=/bin:/usr/bin", "HOME=/root", NULL};
-            sys_execve("/bin/sh", (char **)shell_argv, (char **)shell_envp);
+            char user_env[64];
+            char *p = user_env;
+            p[0] = 'U'; p[1] = 'S'; p[2] = 'E'; p[3] = 'R'; p[4] = '=';
+            int i = 5;
+            for (int j = 0; username[j] && i < 63; j++) user_env[i++] = username[j];
+            user_env[i] = '\0';
+            const char *shell_argv[] = {"/bin/gosh", NULL};
+            const char *shell_envp[] = {"PATH=/bin:/usr/bin", "HOME=/root", user_env, NULL};
+            sys_execve("/bin/gosh", (char **)shell_argv, (char **)shell_envp);
             return 0;
         }
 
