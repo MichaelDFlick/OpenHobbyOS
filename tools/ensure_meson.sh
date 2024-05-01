@@ -7,6 +7,12 @@ PYTHON=${PYTHON:-python3}
 REQUIREMENTS="$ROOT/tools/meson-requirements.txt"
 STAMP="$VENV_DIR/.openhobbyos-meson.stamp"
 
+# Check venv meson first (may be newer than system meson)
+if [[ -x "$VENV_DIR/bin/meson" ]]; then
+    printf '%s\n' "$VENV_DIR/bin/meson"
+    exit 0
+fi
+
 if command -v meson &>/dev/null; then
     command -v meson
     exit 0

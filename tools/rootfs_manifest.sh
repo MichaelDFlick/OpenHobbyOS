@@ -20,24 +20,16 @@ ohos_rootfs_append_entries() {
     _out+=("$ROOT/assets/etc/xdg/fastfetch/ohos_logo_small.txt::/root/.config/fastfetch/ohos_logo_small.txt")
     _out+=("$ROOT/build/user/hello.elf::/bin/hello")
     _out+=("$ROOT/build/user/uname.elf::/bin/uname")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/toolbox")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/ls")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/cat")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/stat")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/pwd")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/env")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/id")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/echo")
     _out+=("$ROOT/build/user/sh.elf::/bin/sh")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/sleep")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/mkdir")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/clear")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/parallel")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/yield")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/poweroff")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/reboot")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/suspend")
-    _out+=("$ROOT/build/user/toolbox.elf::/bin/help")
+
+    # Coreutils part starts from here.
+    for _cu in cat chmod cp cut dd date dirname echo false fmt fold head ln link \
+               ls mkdir mv paste pr printf rm rmdir seq sleep sort sum sync \
+               tac tail tee touch tr true truncate unlink wc yes; do
+        if [[ -f "$ROOT/build/ports/sysroot/bin/$_cu" ]]; then
+            _out+=("$ROOT/build/ports/sysroot/bin/$_cu::/bin/$_cu")
+        fi
+    done
     if [[ -f "$ROOT/build/ports/sysroot/bin/gosh" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/gosh::/bin/gosh")
     fi
@@ -98,10 +90,6 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/milkyway::/bin/milkyway")
     fi
 
-    if [[ -f "$ROOT/build/ports/sysroot/bin/terminal" ]]; then
-        _out+=("$ROOT/build/ports/sysroot/bin/terminal::/bin/terminal")
-    fi
-
     if [[ -f "$ROOT/build/ports/ohplay/install/bin/ohplay" ]]; then
         _out+=("$ROOT/build/ports/ohplay/install/bin/ohplay::/bin/ohplay")
         _out+=("$ROOT/build/ports/ohplay/install/bin/ohplay::/bin/play")
@@ -127,15 +115,23 @@ ohos_rootfs_append_entries() {
         _out+=("$ROOT/build/ports/sysroot/bin/gears::/bin/gears")
     fi
 
-    if [[ -d "$ROOT/build/ports/sysroot/usr/bin" ]]; then
-        for coreutil in basename cat chmod cmp cp cut date dirname dd echo false \
-                        head hostname ln link logname ls mkdir mktemp mv nice nproc \
-                        od pathchk printf pwd readlink realpath rm rmdir seq sleep \
-                        sort stat sum sync tac tail tee test touch tr true truncate \
-                        uname uniq unlink wc whoami yes; do
-            if [[ -f "$ROOT/build/ports/sysroot/usr/bin/$coreutil" ]]; then
-                _out+=("$ROOT/build/ports/sysroot/usr/bin/$coreutil::/bin/$coreutil")
+    if [[ -d "$ROOT/build/ports/sysroot/bin" ]]; then
+        for coreutil in basename chmod cmp dd hostname logname mktemp nice nproc \
+                        od pathchk readlink realpath stat sum test \
+                        uname uniq whoami; do
+            if [[ -f "$ROOT/build/ports/sysroot/bin/$coreutil" ]]; then
+                _out+=("$ROOT/build/ports/sysroot/bin/$coreutil::/bin/$coreutil")
             fi
+        done
+    fi
+
+    # Toolbox fallback keeps the live shell usable even when coreutils
+    # applets are missing from the current build.
+    if [[ -f "$ROOT/build/user/toolbox.elf" ]]; then
+        _out+=("$ROOT/build/user/toolbox.elf::/bin/toolbox")
+        for tool in ls cat stat pwd env id echo clear sleep mkdir parallel yield \
+                    poweroff reboot suspend help uname; do
+            _out+=("$ROOT/build/user/toolbox.elf::/bin/$tool")
         done
     fi
 
@@ -156,6 +152,10 @@ ohos_rootfs_append_entries() {
 
     if [[ -f "$ROOT/build/ports/sysroot/bin/qt_demo" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/qt_demo::/bin/qt_demo")
+    fi
+
+    if [[ -f "$ROOT/build/ports/sysroot/bin/gtkdemo" ]]; then
+        _out+=("$ROOT/build/ports/sysroot/bin/gtkdemo::/bin/gtkdemo")
     fi
 
     if [[ -f "$ROOT/build/ports/sysroot/lib/ld-openhobbyos.so.1" ]]; then

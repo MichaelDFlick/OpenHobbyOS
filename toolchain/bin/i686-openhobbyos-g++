@@ -30,16 +30,18 @@ if [[ -d "$SYSROOT/include/i386-linux-gnu/c++/$CXX_VER/bits" ]]; then
     args+=(-isystem "$SYSROOT/include/i386-linux-gnu/c++/$CXX_VER/bits")
 fi
 
-if [[ -d "$TARGET_SYSROOT/include" ]]; then
-    args+=(-isystem "$TARGET_SYSROOT/include")
-fi
-
 if [[ -f "$TARGET_SYSROOT/include/openhobbyos/features.h" ]]; then
     args+=(-include "$TARGET_SYSROOT/include/openhobbyos/features.h")
 fi
 
 if [[ -d "$TARGET_SYSROOT/lib" ]]; then
     args+=(-L"$TARGET_SYSROOT/lib" -B"$TARGET_SYSROOT/lib")
+fi
+
+if [[ -d "$TARGET_SYSROOT/include" ]]; then
+    # Keep the target C headers after libstdc++'s include directories so
+    # <cstdlib>/<cstdio> include_next chains can still land on stdlib.h.
+    args+=(-idirafter "$TARGET_SYSROOT/include")
 fi
 
 exec g++ "${args[@]}" "$@"

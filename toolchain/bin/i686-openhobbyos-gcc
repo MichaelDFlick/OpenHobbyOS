@@ -18,7 +18,7 @@ if [[ -f "$SPECS" ]]; then
 fi
 
 if [[ -d "$TARGET_SYSROOT/include" ]]; then
-    args+=(-isystem "$TARGET_SYSROOT/include")
+    args+=(-idirafter "$TARGET_SYSROOT/include")
 fi
 
 if [[ -f "$TARGET_SYSROOT/include/openhobbyos/features.h" ]]; then
