@@ -136,6 +136,22 @@ u8 keyboard_read_raw_scancode(void) {
     return sc;
 }
 
+/* Wait for i8042 input buffer to be empty (status bit 1 == 0) */
+static void kbd_wait_input(void) {
+    for (int i = 0; i < 10000; i++) {
+        if (!(inb(0x64) & 0x02)) return;
+        cpu_pause();
+    }
+}
+
+/* Wait for i8042 output buffer to be full (status bit 0 == 1) */
+static void kbd_wait_output(void) {
+    for (int i = 0; i < 10000; i++) {
+        if (inb(0x64) & 0x01) return;
+        cpu_pause();
+    }
+}
+
 void keyboard_init(void) {
     input_head = 0;
     input_tail = 0;
@@ -144,6 +160,17 @@ void keyboard_init(void) {
     shift_down = false;
     caps_lock = false;
     ctrl_down = false;
+
+    /* Enable keyboard interrupts on the i8042 controller */
+    kbd_wait_input();
+    outb(0x64, 0x20);              /* command: read command byte */
+    kbd_wait_output();
+    u8 cmd = inb(0x60);            /* read current command byte */
+    kbd_wait_input();
+    outb(0x64, 0x60);              /* command: write command byte */
+    kbd_wait_input();
+    outb(0x60, cmd | 1u);          /* set bit 0 = enable keyboard interrupt */
+
     irq_install_handler(1, keyboard_irq);
     pic_clear_mask(1);
 }

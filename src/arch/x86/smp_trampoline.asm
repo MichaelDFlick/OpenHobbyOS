@@ -45,7 +45,7 @@ pm_entry:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov ax, 0x3B
+    mov ax, 0x38
     mov gs, ax
 
     ; Load page directory from mailbox

@@ -79,8 +79,14 @@ void apic_init(void) {
     lapic_base_phys = (u32)(apic_base_msr & 0xFFFFF000);
     console_printf("[apic] LAPIC base phys: %x\n", lapic_base_phys);
 
-    /* Map LAPIC MMIO (one page) */
-    lapic_mmio = (volatile u32 *)(KERNEL_VIRTUAL_BASE + lapic_base_phys);
+    /* Map LAPIC MMIO (one page) into kernel virtual space.
+     * 0xFF800000 is a safe hole above the kernel's 896MB identity/higher-half
+     * mapping (0xC0000000-0xF8000000). Cannot use KERNEL_VIRTUAL_BASE + phys
+     * because phys is 0xFEE00000 — the 32-bit sum wraps and the resulting
+     * virtual address isn't mapped by the page tables. */
+    page_map(page_directory_get_kernel(), 0xFF800000, lapic_base_phys,
+             PTE_PRESENT | PTE_RW | PTE_GLOBAL);
+    lapic_mmio = (volatile u32 *)0xFF800000;
 
     /* Enable APIC in MSR */
     wrmsr(IA32_APIC_BASE_MSR, apic_base_msr | APIC_BASE_ENABLE);
@@ -114,13 +120,22 @@ void apic_init(void) {
 
 static void find_ioapic_via_madt(void) {
     /* Walk the RSDP to find MADT, then walk MADT entries */
-    /* For now, probe common IOAPIC physical addresses */
+    /* For now, probe common IOAPIC physical addresses using page mappings.
+     * IOAPIC access requires writing the register index to offset 0,
+     * then reading the value from offset 0x10 (ioapic_mmio[4]). */
     u32 candidates[] = { 0xFEC00000, 0xFEC01000, 0xFEC02000 };
     for (int i = 0; i < 3; i++) {
-        volatile u32 *test = (volatile u32 *)(uintptr_t)candidates[i];
-        u32 version = test[1];
+        page_map(page_directory_get_kernel(), 0xFF802000, candidates[i],
+                 PTE_PRESENT | PTE_RW | PTE_GLOBAL);
+        volatile u32 *mmio = (volatile u32 *)0xFF802000;
+        mmio[0] = 0x01;  /* IOAPICVER register index */
+        u32 version = mmio[4];
+        mmio[0] = 0x00;  /* IOAPICID register index */
+        u32 id = mmio[4];
         if (version != 0 && version != 0xFFFFFFFF) {
             ioapic_base_phys = candidates[i];
+            console_printf("[ioapic] probed id=%u version=%x at %x\n",
+                           id, version, candidates[i]);
             return;
         }
     }
@@ -130,11 +145,15 @@ void ioapic_init(void) {
     find_ioapic_via_madt();
 
     if (!ioapic_base_phys) {
-        console_printf("[ioapic] no IOAPIC found\n");
+        console_printf("[ioapic] no IOAPIC found, falling back to PIC via LINT0\n");
+        /* Re-enable LINT0 in ExtInt mode so PIC interrupts reach the LAPIC */
+        apic_write(LAPIC_LVT_LINT0, LVT_DELIVERY_EXTINT);
         return;
     }
 
-    ioapic_mmio = (volatile u32 *)(KERNEL_VIRTUAL_BASE + ioapic_base_phys);
+    ioapic_mmio = (volatile u32 *)0xFF801000;
+    page_map(page_directory_get_kernel(), 0xFF801000, ioapic_base_phys,
+             PTE_PRESENT | PTE_RW | PTE_GLOBAL);
 
     u32 ioapic_id = ioapic_read(IOAPIC_ID);
     u32 ioapic_ver = ioapic_read(IOAPIC_VERSION);
@@ -193,21 +212,36 @@ void lapic_timer_calibrate(void) {
     outb(0x42, 0xFF);
     outb(0x42, 0xFF);
 
+    /* Ensure PIT channel 2 gate is enabled (port 0x61 bit 0) */
+    u8 speaker = inb(0x61);
+    outb(0x61, speaker | 0x01);
+
     /* Start LAPIC timer at max divide, zero counter */
     apic_write(LAPIC_TIMER_DIV, 0x0B);
     apic_write(LAPIC_TIMER_INITCNT, 0xFFFFFFFF);
 
-    /* Wait for PIT to reach 0 (65536 / 1193180 ≈ 55ms) */
-    while ((inb(0x42) & 0x20) == 0) cpu_pause();
+    /* Wait for PIT channel 2 OUT pin to go high (counter reaches 0).
+     * Port 0x61 bit 5 is the PIT channel 2 OUT status.
+     * Timeout after ~200ms to prevent infinite hang if PIT is broken. */
+    u32 timeout = 200000;
+    while (((inb(0x61) & 0x20) == 0) && --timeout) {
+        cpu_pause();
+    }
 
-    u32 ticks_elapsed = 0xFFFFFFFF - apic_read(LAPIC_TIMER_CURCNT);
+    u32 ticks_elapsed;
+    if (timeout == 0) {
+        /* PIT didn't respond — use a reasonable fallback */
+        ticks_elapsed = 5500000;  /* ~100 MHz bus for 55ms */
+    } else {
+        ticks_elapsed = 0xFFFFFFFF - apic_read(LAPIC_TIMER_CURCNT);
+    }
 
     /* Stop the timer */
     apic_write(LAPIC_TIMER_INITCNT, 0);
 
-    /* Calculate bus frequency in KHz: ticks * (1193180 / 65536) / 1000 ≈ ticks / 55 */
-    u32 bus_freq_khz = (ticks_elapsed * 1193180) / (65536 * 1000);
-    if (bus_freq_khz == 0) bus_freq_khz = 100000; /* fallback */
+    /* Calculate bus frequency in KHz: ticks / 55ms = bus frequency in Hz / 1000 */
+    u32 bus_freq_khz = ticks_elapsed / 55;
+    if (bus_freq_khz < 100) bus_freq_khz = 100000; /* fallback for broken calibration */
 
     console_printf("[lapic] calibration: %u ticks in 55ms, bus ~%u KHz\n",
                    ticks_elapsed, bus_freq_khz);

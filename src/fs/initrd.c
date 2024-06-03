@@ -48,11 +48,6 @@ void initrd_init(const multiboot_info_t *mbi) {
      * identity mappings for the 32-80MB range. */
     base = (const u8 *)(uintptr_t)(KERNEL_VIRTUAL_BASE + mods[0].mod_start);
     module_size = mods[0].mod_end - mods[0].mod_start;
-    console_printf("[initrd] base=%x module_size=%u\n", (u32)(uintptr_t)base, module_size);
-    for (u32 _i = 0; _i < mods[0].mod_end - mods[0].mod_start && _i < 64; _i++) {
-        console_printf("%02x ", base[_i]);
-    }
-    console_write("\n");
 
     if (module_size < sizeof(initrd_header_t)) {
         panic("Initrd is too small");
@@ -89,12 +84,6 @@ void initrd_init(const multiboot_info_t *mbi) {
         files[i].size = entries[i].size;
         files[i].flags = entries[i].flags;
         files[i].index = i;
-        if (strcmp(entries[i].name, "/bin/xnx-compositor") == 0) {
-            console_printf("[initrd] xnx: off=%u sz=%u data=%x\n",
-                entries[i].offset, entries[i].size, (u32)(uintptr_t)files[i].data);
-            console_printf("[initrd] xnx magic: %02x %02x %02x %02x\n",
-                files[i].data[0], files[i].data[1], files[i].data[2], files[i].data[3]);
-        }
     }
 
     file_count = header->count;

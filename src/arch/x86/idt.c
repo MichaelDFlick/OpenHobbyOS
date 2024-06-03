@@ -268,6 +268,26 @@ void isr_dispatch(registers_t *regs) {
             task_abort_from_trap(regs, exception_names[regs->int_no]);
         }
 
+        {
+            u8 dbg_instr[16];
+            u32 dbg_eip = regs->eip;
+            for (int ii = 0; ii < 16; ii++) {
+                if (page_is_present(NULL, dbg_eip + ii)) {
+                    dbg_instr[ii] = *(volatile u8 *)(uintptr_t)(dbg_eip + ii);
+                } else {
+                    dbg_instr[ii] = 0;
+                }
+            }
+            console_printf("[exception] task=%s int=%u eip=%x err=%x cs=%x useresp=%x\n",
+                           current_task.path[0] ? current_task.path : "?",
+                           regs->int_no, regs->eip, regs->err_code, regs->cs, regs->useresp);
+            console_printf("[exception] instr at %x:", dbg_eip);
+            for (int ii = 0; ii < 16; ii++) {
+                console_printf(" %02x", dbg_instr[ii]);
+            }
+            console_printf("\n");
+        }
+
         panic("CPU exception %u (%s), err=%x eip=%x",
               regs->int_no,
               exception_names[regs->int_no],
@@ -281,6 +301,7 @@ void isr_dispatch(registers_t *regs) {
             irq_handlers[irq](regs);
         }
         pic_send_eoi(irq);
+        apic_eoi();  /* Also send EOI to LAPIC for IOAPIC-routed interrupts */
         return;
     }
 

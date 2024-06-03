@@ -37,6 +37,28 @@ start:
     mov ecx, cr4
     and ecx, ~0x20
     mov cr4, ecx
+
+    ; Save multiboot info before zeroing BSS (clobbers eax/ecx/edi)
+    push eax
+    push ebx
+
+    ; zero BSS explicitly — GRUB zeroes it per multiboot, but some QEMU
+    ; versions or edge cases may leave stale data that decodes as BOUND
+    ; instructions, causing spurious exception 5 at early user EIP.
+    extern __bss_start
+    extern __bss_end
+    mov edi, __bss_start
+    mov ecx, __bss_end
+    sub ecx, edi
+    shr ecx, 2
+    xor eax, eax
+    cld
+    rep stosd
+
+    ; Restore multiboot info
+    pop ebx
+    pop eax
+
     mov esp, stack_top
     push ebx
     push eax

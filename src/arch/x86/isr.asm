@@ -125,7 +125,7 @@ isr_common:
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov ax, 0x3B
+    mov ax, 0x38
     mov gs, ax
     push esp
     call isr_dispatch

@@ -45,7 +45,11 @@ void serial_write_char(char ch) {
     if (!serial_ready) {
         return;
     }
+    /* Timeout after ~1ms (COM1 at 115200 baud, ~10µs per char worst-case) */
+    int timeout = 100000;
     while (!serial_transmit_empty()) {
+        if (--timeout == 0) return;
+        cpu_pause();
     }
     outb(COM1, (u8)ch);
 }
