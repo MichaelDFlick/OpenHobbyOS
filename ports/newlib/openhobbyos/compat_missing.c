@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#include <fcntl.h>
+
 extern char **environ;
 
 /* Forward declarations for functions not in newlib headers */
@@ -537,6 +539,19 @@ size_t __wcsftime_l(wchar_t *s, size_t max, const wchar_t *fmt, const struct tm 
     return wcsftime(s, max, fmt, tm);
 }
 
+/* initstate - BSD random state initialization (stub for fontconfig compat) */
+char *initstate(unsigned seed, char *state, size_t n) {
+    (void)seed;
+    (void)state;
+    (void)n;
+    return state;
+}
+
+/* setstate - BSD random state switching (stub for fontconfig compat) */
+char *setstate(char *state) {
+    return state;
+}
+
 /* Weak stubs for __swrite64 / __sseek64.
  * Newlib's findfp.o references these symbols, and the linker
  * processes libopenhobbyosgloss.a before libc.a, so the strong
@@ -584,5 +599,17 @@ _off64_t _lseek64(int fd, _off64_t offset, int whence)
 int _fstat64(int fd, struct stat64 *buf)
 {
     return fstat(fd, (struct stat *)buf);
+}
+
+/* syslog/dn_expand/res_query stubs - some already in libglibstubs.a, keep dn_expand/res_query here */
+int dn_expand(const unsigned char *msg, const unsigned char *eomorig,
+              const unsigned char *comp_dn, char *exp_dn, int length)
+{
+    return -1;
+}
+
+int res_query(const char *dname, int class, int type, unsigned char *answer, int anslen)
+{
+    return -1;
 }
 

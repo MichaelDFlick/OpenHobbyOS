@@ -34,7 +34,9 @@ set(OPENHOBBYOS ON CACHE BOOL "Targeting OpenHobbyOS")
 
 set(QT_BUILD_EXAMPLES OFF CACHE BOOL "Disable examples")
 set(QT_BUILD_TESTS OFF CACHE BOOL "Disable tests")
-set(QT_BUILD_TOOLS_WHEN_CROSSCOMPILING ON CACHE BOOL "Build tools for cross-compilation")
+# Reuse the native Qt host tools instead of trying to rebuild them with the
+# target toolchain. The host Qt install is built first in ports/qt/build-qt.sh.
+set(QT_BUILD_TOOLS_WHEN_CROSSCOMPILING OFF CACHE BOOL "Build tools for cross-compilation")
 
 set(FEATURE_linuxfb OFF CACHE BOOL "Disable linuxfb")
 set(FEATURE_xcb OFF CACHE BOOL "Disable xcb")

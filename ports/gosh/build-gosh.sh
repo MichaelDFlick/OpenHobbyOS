@@ -19,7 +19,7 @@ export PKG_CONFIG_PATH=""
 
 INCLUDES="-I$ROOT/user/lib -I$SYSROOT/include -I$SYSROOT/include/cairo -I$SYSROOT/include/freetype2 -I$SYSROOT/include/pixman-1 -idirafter $ROOT/include"
 CFLAGS="--sysroot=$SYSROOT -O2 -ffreestanding -fno-pic -fno-pie $INCLUDES"
-LIBS="-L$SYSROOT/lib -lcairo -lpixman-1 -lfreetype -lpng16 -lz -lm -lgcc"
+LIBS="-L$SYSROOT/lib -lcairo -lpixman-1 -lfreetype -lz -lm -lgcc"
 
 echo "[gosh] Compiling..."
 $CC $CFLAGS -c "$ROOT/user/gosh.c" -o "$BUILD_DIR/gosh.o"

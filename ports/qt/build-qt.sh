@@ -135,7 +135,6 @@ if [ ! -f "$CROSS_MARKER" ]; then
         -DFEATURE_system_pixman=ON \
         -DQT_BUILD_EXAMPLES=OFF \
         -DQT_BUILD_TESTS=OFF \
-        -DQT_FORCE_BUILD_TOOLS=ON \
         -DQT_HOST_PATH="$HOST_INSTALL_DIR" \
         -DQT_HOST_PATH_CMAKE_DIR="$HOST_CMAKE_DIR" \
         -DCMAKE_BUILD_TYPE=Release \

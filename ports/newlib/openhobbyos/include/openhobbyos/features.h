@@ -10,8 +10,10 @@
 #define O_PATH 0x02000000
 #endif
 
-/* libstdc++ (glibc build) expects __GLIBC_PREREQ from features.h */
-#ifndef __GLIBC_PREREQ
+/* libstdc++ (glibc build) expects __GLIBC_PREREQ from features.h.
+   Guard on __GLIBC__ (not __GLIBC_PREREQ) because GCC may not have
+   applied its target-specific built-in defines at -include time. */
+#ifndef __GLIBC__
 #define __GLIBC__ 2
 #define __GLIBC_MINOR__ 0
 #define __GLIBC_PREREQ(maj, min) \

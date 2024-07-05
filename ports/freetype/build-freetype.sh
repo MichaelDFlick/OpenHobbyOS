@@ -71,7 +71,7 @@ includedir=${prefix}/include
 
 Name: freetype2
 Description: FreeType 2 font engine
-Version: 2.14.3
+Version: 26.2.20
 Cflags: -I${includedir}
 Libs: -L${libdir} -lfreetype
 EOF

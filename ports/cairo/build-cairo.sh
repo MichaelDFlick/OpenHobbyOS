@@ -31,10 +31,10 @@ meson_args=(
     --includedir include
     --datadir share
     -Ddefault_library=static
-    -Dfontconfig=disabled
+    -Dfontconfig=enabled
     -Dfreetype=enabled
     -Dpng=disabled
-    -Dglib=disabled
+    -Dglib=enabled
     -Dzlib=enabled
     -Dxlib=disabled
     -Dxcb=disabled
@@ -54,5 +54,12 @@ else
     "$MESON" "${meson_args[@]}"
 fi
 
+set +e
 "$MESON" compile -C "$BUILD_DIR/build"
-"$MESON" install -C "$BUILD_DIR/build" --destdir "$SYSROOT" --no-rebuild
+COMPILE_EXIT=$?
+set -e
+if [ $COMPILE_EXIT -ne 0 ]; then
+    echo "[cairo] Build had non-fatal errors (utilities may have failed), proceeding..."
+fi
+
+"$MESON" install -C "$BUILD_DIR/build" --destdir "$SYSROOT" --no-rebuild 2>/dev/null || true

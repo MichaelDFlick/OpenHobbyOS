@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "compat.h"
@@ -443,4 +444,36 @@ char *get_current_dir_name(void) {
     }
 
     return buffer;
+}
+
+int chown(const char *path, uid_t owner, gid_t group) {
+    (void)path; (void)owner; (void)group;
+    errno = ENOSYS;
+    return -1;
+}
+
+int lchown(const char *path, uid_t owner, gid_t group) {
+    (void)path; (void)owner; (void)group;
+    errno = ENOSYS;
+    return -1;
+}
+
+long fpathconf(int fd, int name) {
+    (void)fd;
+    switch (name) {
+    case _PC_NAME_MAX: return 255;
+    case _PC_PATH_MAX: return 1024;
+    case _PC_PIPE_BUF: return 512;
+    default: errno = EINVAL; return -1;
+    }
+}
+
+long pathconf(const char *path, int name) {
+    (void)path;
+    return fpathconf(-1, name);
+}
+
+int utimes(const char *path, const struct timeval times[2]) {
+    (void)path; (void)times;
+    return 0;
 }
