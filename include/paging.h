@@ -25,7 +25,7 @@
 #define PTE_COW         0x200   /* Copy-on-write (software-defined) */
 #define PTE_ALLOCATED   0x400   /* Frame was allocated by us (software-defined) */
 #define PTE_DEMAND_ZERO 0x800   /* Demand-zero page (allocate on first fault) */
-#define PTE_SWAPPED     0x200   /* Page swapped out to disk (same bit as COW, distinguished by PRESENT=0) */
+#define PTE_SWAPPED     0x1000  /* Page swapped out to disk (software-defined) */
 
 /* Page backing types for demand paging */
 typedef enum {
