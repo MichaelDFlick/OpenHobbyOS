@@ -89,6 +89,11 @@ void frame_free(u32 phys_addr) {
     u32 i = frame - g_frame_allocator.first_frame;
     u32 idx = i / 32;
     u32 bit = i % 32;
+
+    /* Guard against double-free: skip if already free */
+    if (!(g_frame_allocator.bitmap[idx] & (1U << bit))) {
+        return;
+    }
     
     g_frame_allocator.bitmap[idx] &= ~(1U << bit);
     g_frame_allocator.used_frames--;
