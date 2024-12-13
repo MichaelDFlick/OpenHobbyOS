@@ -958,6 +958,8 @@ bool ext2_create_file(struct ext2_fs *fs, u32 parent_inode, const char *name) {
         u8 *block_data;
 
         if (is_new) {
+            if (b >= 12) break; /* beyond direct blocks, not implemented */
+
             u32 new_block = ext2_alloc_block(fs);
             if (!new_block) break;
 
