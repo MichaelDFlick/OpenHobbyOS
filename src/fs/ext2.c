@@ -1028,6 +1028,9 @@ bool ext2_create_file(struct ext2_fs *fs, u32 parent_inode, const char *name) {
     }
 
     kfree(parent_data);
+    if (!entry_added) {
+        ext2_free_inode(fs, child);
+    }
     return entry_added;
 }
 
