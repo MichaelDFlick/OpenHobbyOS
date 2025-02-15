@@ -809,7 +809,11 @@ bool ext2_mkdir(struct ext2_fs *fs, u32 parent_inode, const char *name) {
     }
 
     u8 *data = kmalloc(fs->block_size);
-    if (!data) return false;
+    if (!data) {
+        ext2_free_inode(fs, child);
+        ext2_free_block(fs, data_block);
+        return false;
+    }
     memset(data, 0, fs->block_size);
 
     struct ext2_dir_entry *dot = (struct ext2_dir_entry *)data;
@@ -829,6 +833,8 @@ bool ext2_mkdir(struct ext2_fs *fs, u32 parent_inode, const char *name) {
 
     if (!ext2_write_block(fs, data_block, data)) {
         kfree(data);
+        ext2_free_inode(fs, child);
+        ext2_free_block(fs, data_block);
         return false;
     }
     kfree(data);
