@@ -127,10 +127,11 @@ bool ext2_read_inode(struct ext2_fs *fs, u32 inode_num, struct ext2_inode *inode
 
 bool ext2_read_inode_block(struct ext2_fs *fs, struct ext2_inode *inode, u32 block_idx, void *buffer) {
     u32 block_num = 0;
+    u32 entries_per_block = fs->block_size / sizeof(u32);
     
     if (block_idx < 12) {
         block_num = inode->i_block[block_idx];
-    } else if (block_idx < 12 + 256) {
+    } else if (block_idx < 12 + entries_per_block) {
         u32 indirect_idx = block_idx - 12;
         u8 *indirect_buf = kmalloc(fs->block_size);
         if (!indirect_buf) return false;
@@ -569,10 +570,11 @@ bool ext2_sync_bgdt(struct ext2_fs *fs) {
 
 bool ext2_write_inode_block(struct ext2_fs *fs, struct ext2_inode *inode, u32 block_idx, const void *buffer) {
     u32 block_num = 0;
+    u32 entries_per_block = fs->block_size / sizeof(u32);
 
     if (block_idx < 12) {
         block_num = inode->i_block[block_idx];
-    } else if (block_idx < 12 + 256) {
+    } else if (block_idx < 12 + entries_per_block) {
         u32 indirect_idx = block_idx - 12;
         u8 *indirect_buf = kmalloc(fs->block_size);
         if (!indirect_buf) return false;
