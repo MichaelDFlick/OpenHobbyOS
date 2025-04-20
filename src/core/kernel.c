@@ -242,10 +242,6 @@ void kernel_main(u32 magic, u32 mbi_addr) {
             const char *app_argv[] = {"/bin/gosh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
             console_printf("\n[init] gosh exited with status %d\n", app_status);
-        } else if (kernel_path_is_executable("/bin/login")) {
-            const char *app_argv[] = {"/bin/gosh", NULL};
-            app_status = task_run_argv_alongside(NULL, "/bin/gosh", 1, app_argv);
-            console_printf("\n[init] gosh exited with status %d\n", app_status);
         } else if (kernel_path_is_executable("/bin/sh")) {
             const char *app_argv[] = {"/bin/sh", NULL};
             app_status = task_run_argv_alongside(NULL, "/bin/sh", 1, app_argv);
