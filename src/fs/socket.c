@@ -198,7 +198,7 @@ int socket_bind(socket_endpoint_t *socket, const struct sockaddr *addr, socklen_
     if (un->sun_path[0] == '\0') {
         abstract = true;
     }
-    if (!abstract && un->sun_path[0] == '\0') {
+    if (abstract && un->sun_path[1] == '\0') {
         return -EINVAL;
     }
     if (strlen(un->sun_path) >= sizeof(socket->path)) {
