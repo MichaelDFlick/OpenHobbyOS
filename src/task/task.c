@@ -1133,7 +1133,7 @@ bool task_copy_string_from_user(char *dest, size_t dest_size, const char *user_s
 u32 task_brk(u32 requested) {
     page_directory_t *pd = page_directory_get_current();
 
-    if (!current_task.active && !current_task.brk) {
+    if (!current_task.active) {
         return 0;
     }
 
