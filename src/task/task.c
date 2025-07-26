@@ -969,10 +969,6 @@ static ssize_t task_console_read(void *buffer, size_t length) {
     return (ssize_t)used;
 }
 
-static void task_clear_user_space(void) {
-    memset((void *)(uintptr_t)USER_BASE, 0, USER_LIMIT - USER_BASE);
-}
-
 static task_mapping_t *task_mapping_find(void *addr, size_t length) {
     u32 base = (u32)(uintptr_t)addr;
     u32 size = align_up((u32)length, TASK_PAGE_SIZE);
