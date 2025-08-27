@@ -535,7 +535,8 @@ static int execute_external_direct(const char *path, const char **argv) {
         while (argv[ac] && ac < 63) { exec_argv[ac] = (char *)argv[ac]; ac++; }
         exec_argv[ac] = NULL;
         int ee = 0; while (g_envp[ee]) ee++;
-        const char *new_envp[ee + 2];
+        if (ee > 62) ee = 62;
+        const char *new_envp[64];
         for (int ei = 0; ei < ee; ei++) new_envp[ei] = g_envp[ei];
         new_envp[ee] = "TERM=xterm-256color";
         new_envp[ee + 1] = NULL;
