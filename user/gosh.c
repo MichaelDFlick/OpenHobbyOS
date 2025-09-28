@@ -544,11 +544,7 @@ static int execute_external_direct(const char *path, const char **argv) {
         write(2, "gosh: exec failed\n", 18); _exit(127);
     }
     int status = 0;
-    for (;;) {
-        int ret = sys_waitpid(pid, &status, WNOHANG);
-        if (ret == pid) break;
-        sys_sched_yield();
-    }
+    sys_waitpid(pid, &status, 0);
     return status;
 }
 
