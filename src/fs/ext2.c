@@ -193,6 +193,7 @@ u32 ext2_dir_lookup(struct ext2_fs *fs, struct ext2_inode *dir_inode, const char
             }
             
             if (entry->rec_len == 0) {
+                /* Corrupt directory entry: rec_len of 0 prevents iteration */
                 break;
             }
             offset += entry->rec_len;
