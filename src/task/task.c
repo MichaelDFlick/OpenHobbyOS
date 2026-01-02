@@ -496,6 +496,7 @@ static bool task_slot_write_to_user(task_slot_t *slot, u32 user_addr, const void
     /* Switch to target slot's page directory so we can access its user pages */
     page_directory_t *old_pd = page_directory_get_current();
     page_directory_switch(slot->page_directory);
+    paging_flush_tlb();
     
     bool ok = false;
     if (page_is_present(NULL, user_addr) && page_is_present(NULL, user_addr + length - 1)) {
@@ -504,6 +505,7 @@ static bool task_slot_write_to_user(task_slot_t *slot, u32 user_addr, const void
     }
     
     page_directory_switch(old_pd);
+    paging_flush_tlb();
     return ok;
 }
 
