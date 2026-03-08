@@ -899,37 +899,6 @@ unhandled:
     }
 
 unhandled_log:
-    /* Dump page table state for debugging */
-    {
-        u32 pd_idx = virt_to_pd_index(virt_addr);
-        u32 pt_idx = virt_to_pt_index(virt_addr);
-        u32 pde = pd->entries[pd_idx];
-        serial_write("[pf] PDE[");
-        /* print pd_idx */
-        { char buf[8]; int len = 0; u32 v = pd_idx; if(v==0){buf[len++]='0';} else{while(v){buf[len++]='0'+v%10;v/=10;}}
-          for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
-        serial_write("]=");
-        { char buf[11]; int len=0; u32 v=pde; if(v==0){buf[len++]='0';} else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}}
-          for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
-        if (pde & PTE_PRESENT) {
-            u32 pt_phys = entry_get_phys(pde);
-            page_table_t *pt = ptable_ptr(pt_phys);
-            u32 pte = pt->entries[pt_idx];
-            serial_write(" PTE[");
-            { char buf[8]; int len = 0; u32 v = pt_idx; if(v==0){buf[len++]='0';} else{while(v){buf[len++]='0'+v%10;v/=10;}}
-              for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
-            serial_write("]=");
-            { char buf[11]; int len=0; u32 v=pte; if(v==0){buf[len++]='0';} else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}}
-              for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
-        } else {
-            serial_write(" NOT_PRESENT");
-        }
-        serial_write(" pd=");
-        { char buf[11]; int len=0; u32 v=(u32)(uintptr_t)pd; if(v==0){buf[len++]='0';} else{while(v){buf[len++]="0123456789abcdef"[v%16];v/=16;}}
-          for(int i=len-1;i>=0;i--) serial_write_char(buf[i]); }
-        serial_write("\n");
-    }
-
     /* Log the fault concisely, then kill the faulting task */
     console_printf("[page_fault] %s at %x by %s (%s%s%s)\n",
                    present ? "protection violation" : "page not present",
