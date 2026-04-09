@@ -23,6 +23,10 @@ static enc_blkdev_priv_t *g_priv = NULL;
 static int enc_blkdev_read(blkdev_t *dev, u32 lba, u32 count, void *buffer) {
     enc_blkdev_priv_t *priv = (enc_blkdev_priv_t *)dev->private;
 
+    if (lba + 1 + count > priv->base.total_sectors) {
+        return -1;
+    }
+
     if (priv->base.ops->read(&priv->base, lba + 1, count, buffer) != 0) {
         return -1;
     }
