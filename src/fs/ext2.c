@@ -173,6 +173,11 @@ u32 ext2_dir_lookup(struct ext2_fs *fs, struct ext2_inode *dir_inode, const char
         while (offset < fs->block_size) {
             struct ext2_dir_entry *entry = (struct ext2_dir_entry *)(block_buffer + offset);
             
+            if (entry->rec_len == 0) {
+                /* Corrupt directory entry: rec_len of 0 prevents iteration */
+                break;
+            }
+            
             if (entry->inode == 0) {
                 offset += entry->rec_len;
                 continue;
@@ -190,11 +195,6 @@ u32 ext2_dir_lookup(struct ext2_fs *fs, struct ext2_inode *dir_inode, const char
                 u32 result = entry->inode;
                 kfree(block_buffer);
                 return result;
-            }
-            
-            if (entry->rec_len == 0) {
-                /* Corrupt directory entry: rec_len of 0 prevents iteration */
-                break;
             }
             offset += entry->rec_len;
         }
