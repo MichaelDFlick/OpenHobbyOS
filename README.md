@@ -40,6 +40,7 @@ Why should i use OhOs ? dont use it. seriously. its a hobby/research OS with pot
 - User authentication with SHA-256 hashed passwords
 
 ## Trying out OpenHobbyOS
+> Disclaimer: the os is in active development. test within a controlled machine. 
 
 If you want to try out OpenHobbyOS without building the whole OS, you can build the ISO and run it with QEMU:
 

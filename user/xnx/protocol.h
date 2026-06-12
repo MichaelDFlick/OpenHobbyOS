@@ -131,8 +131,10 @@ struct xnx_fb_var_screeninfo {
     struct xnx_fb_bitfield green;
     struct xnx_fb_bitfield blue;
     struct xnx_fb_bitfield transp;
+    uint32_t pitch;
 };
 
 #define XNX_FBIOGET_VSCREENINFO 0x4600
+#define XNX_FBIODISOWN          0x4601
 
 #endif

@@ -264,6 +264,15 @@ static int sys_ioctl(registers_t *regs) {
         return 0;
     }
 
+    if (request == FBIODISOWN) {
+        task_fd_t *slot = task_fd_slot(fd);
+        if (!slot || !slot->used || slot->kind != TASK_FD_FB0) {
+            return LERR_FAULT;
+        }
+        console_fb_release();
+        return 0;
+    }
+
     if (request == OHOS_NETDEV_GET_MAC) {
         task_fd_t *slot = task_fd_slot(fd);
         if (!slot || !slot->used || slot->kind != TASK_FD_NET) {

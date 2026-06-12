@@ -33,6 +33,7 @@ ohos_rootfs_append_entries() {
     if [[ -f "$ROOT/build/ports/sysroot/bin/gosh" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/gosh::/bin/gosh")
     fi
+
     _out+=("$ROOT/build/user/test_fb.elf::/bin/test_fb")
     _out+=("$ROOT/build/user/net_test.elf::/bin/net_test")
     _out+=("$ROOT/build/user/net_info.elf::/bin/net_info")
@@ -152,10 +153,6 @@ ohos_rootfs_append_entries() {
 
     if [[ -f "$ROOT/build/ports/sysroot/bin/qt_demo" ]]; then
         _out+=("$ROOT/build/ports/sysroot/bin/qt_demo::/bin/qt_demo")
-    fi
-
-    if [[ -f "$ROOT/build/ports/sysroot/bin/gtkdemo" ]]; then
-        _out+=("$ROOT/build/ports/sysroot/bin/gtkdemo::/bin/gtkdemo")
     fi
 
     if [[ -f "$ROOT/build/ports/sysroot/lib/ld-openhobbyos.so.1" ]]; then

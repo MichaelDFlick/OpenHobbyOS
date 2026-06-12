@@ -31,10 +31,10 @@ meson_args=(
     --includedir include
     --datadir share
     -Ddefault_library=static
-    -Dfontconfig=enabled
+    -Dfontconfig=disabled
     -Dfreetype=enabled
     -Dpng=disabled
-    -Dglib=enabled
+    -Dglib=disabled
     -Dzlib=enabled
     -Dxlib=disabled
     -Dxcb=disabled

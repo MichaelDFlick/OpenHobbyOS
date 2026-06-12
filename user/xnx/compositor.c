@@ -12,40 +12,58 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <cairo.h>
+#include <cairo-ft.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
 #include "protocol.h"
 
+/* ─── constants ─────────────────────────────────────────────────────── */
+#define MAX_CLIENTS             32
+#define MAX_SURFACES            256
 #define MAX_SURFACES_PER_CLIENT 16
-#define MAX_CLIENTS 32
-#define MAX_SURFACES 256
-#define READ_BUF_SIZE XNX_MAX_MESSAGE_BYTES
-#define FRAME_INTERVAL_MS 16
+#define READ_BUF_SIZE           XNX_MAX_MESSAGE_BYTES
+#define FRAME_INTERVAL_MS       16
 
-/* ---- Window Manager constants ---- */
-#define TITLE_BAR_H    28
+#define FONT_PATH       "/fonts/Monospace.ttf"
+#define FONT_SIZE       13
+#define FONT_SIZE_TITLE 12
+
+#define TITLE_BAR_H    26
 #define BORDER_W       2
-#define MOVE_STEP      32
-#define CLOSE_BTN_SIZE 16
+#define CLOSE_BTN_SIZE 14
+#define MIN_BTN_SIZE   14
+#define MAX_BTN_SIZE   14
+#define RESIZE_HANDLE  6
 
-/* Decoration colours (ARGB) */
-#define COL_DESK_BG       0xFF1A1A2E
-#define COL_TITLE_BG      0xFF2D3B4D
-#define COL_TITLE_FG      0xFFFFFFFF
-#define COL_BORDER        0xFF555555
-#define COL_BORDER_FOCUS  0xFF4A9EFF
-#define COL_CLOSE_BTN     0xFFCC4444
-#define COL_CLOSE_HOVER   0xFFEE6666
+/* colours (ARGB) */
+#define COL_DESKTOP     0xFF0D1117
+#define COL_TITLE_BG    0xE021262D
+#define COL_TITLE_FG    0xFFC9D1D9
+#define COL_BORDER      0xFF30363D
+#define COL_BORDER_FOC  0xFF58A6FF
+#define COL_CLOSE_BTN   0xFFDA3633
+#define COL_CLOSE_HOVER 0xFFF85149
+#define COL_MIN_BTN     0xFF3FB950
+#define COL_MAX_BTN     0xFF58A6FF
+#define COL_TEXT_DIM    0xFF8B949E
+#define COL_WHITE       0xFFFFFFFF
 
+/* ─── types ─────────────────────────────────────────────────────────── */
 struct xnx_surface {
     uint32_t id;
     int client_fd;
     pixman_image_t *image;
-    int32_t x;
-    int32_t y;
-    uint32_t width;
-    uint32_t height;
+    int32_t x, y;
+    uint32_t width, height;
     char title[64];
     int z_order;
     int visible;
+    int focused;
+    int maximized;
+    int minimized;
+    int prev_x, prev_y, prev_w, prev_h;
 };
 
 struct xnx_client {
@@ -60,6 +78,7 @@ struct xnx_client {
     int active;
 };
 
+/* ─── globals ───────────────────────────────────────────────────────── */
 static struct xnx_surface surfaces[MAX_SURFACES];
 static int num_surfaces;
 static uint32_t next_surface_id;
@@ -70,89 +89,96 @@ static int num_clients;
 static uint32_t next_client_id;
 
 static int listener_fd = -1;
+static int fb_fd = -1;
 static pixman_image_t *framebuffer;
-static int fb_width;
-static int fb_height;
+static int fb_width, fb_height;
 static size_t fb_size;
-static uint32_t *fb_pixels;
 static uint32_t *fb_hw_pixels;
 static size_t fb_hw_pitch;
 static int fb_bpp;
 static uint32_t focused_surface_id;
 
 static int mouse_fd = -1;
-static int pointer_x;
-static int pointer_y;
-static uint8_t cursor_type = 1;
-static int cursor_visible;
+static int pointer_x, pointer_y;
+static int cursor_visible = 1;
+static uint8_t prev_buttons = 0;
 
-/* ---- Window Manager state ---- */
-static int dragging_surface_id = -1;
-static int drag_offset_x = 0;
-static int drag_offset_y = 0;
-static uint8_t super_held = 0;
-static uint8_t shift_held = 0;
+/* drag state */
+static int drag_surface_id = -1;
+static int drag_offset_x, drag_offset_y;
+static int resize_surface_id = 0;
+static int resize_edge = 0;
+static int resize_orig_x, resize_orig_y, resize_orig_w, resize_orig_h;
 
-/* ---- Embedded 8x16 bitmap font ---- */
-#include "wm_font.h"
+/* cairo */
+static cairo_surface_t *crs;
+static cairo_t *cr;
+static cairo_font_face_t *cr_font;
+static int font_ascent, font_height, font_w;
+static FT_Library ft_lib;
+static FT_Face ft_face;
+static char font_data[512 * 1024];
+static int font_data_len;
 
-static void draw_char(int x, int y, char ch, uint32_t fg, uint32_t bg) {
-    unsigned char glyph = (unsigned char)ch;
-    for (int row = 0; row < WM_FONT_H; row++) {
-        unsigned char bits = wm_font[glyph * WM_FONT_H + row];
-        for (int col = 0; col < WM_FONT_W; col++) {
-            int px = x + col, py = y + row;
-            if (px < 0 || px >= fb_width || py < 0 || py >= fb_height) continue;
-            uint32_t color = (bits & (0x80 >> col)) ? fg : bg;
-            fb_pixels[py * fb_width + px] = color;
-        }
-    }
-}
+/* pixel buffer for cairo */
+static uint32_t *de_pixels;
 
-static void draw_string(int x, int y, const char *text, uint32_t fg, uint32_t bg) {
-    while (*text) {
-        draw_char(x, y, *text, fg, bg);
-        x += WM_FONT_W;
-        text++;
-    }
-}
+/* ─── forward decls ─────────────────────────────────────────────────── */
+static void draw_frame(void);
 
-static void fill_rect(int rx, int ry, int rw, int rh, uint32_t colour) {
-    for (int row = 0; row < rh; row++) {
-        int py = ry + row;
-        if (py < 0 || py >= fb_height) continue;
-        for (int col = 0; col < rw; col++) {
-            int px = rx + col;
-            if (px < 0 || px >= fb_width) continue;
-            fb_pixels[py * fb_width + px] = colour;
+/* ─── helpers ───────────────────────────────────────────────────────── */
+static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static void flush_fb(void) {
+    if (!fb_hw_pixels || !de_pixels || !fb_hw_pitch) return;
+    for (int y = 0; y < fb_height; ++y) {
+        uint8_t *hw = (uint8_t *)fb_hw_pixels + (size_t)y * fb_hw_pitch;
+        uint8_t *sw = (uint8_t *)&de_pixels[y * fb_width];
+        for (int x = 0; x < fb_width; ++x) {
+            hw[x*3]   = sw[x*4];
+            hw[x*3+1] = sw[x*4+1];
+            hw[x*3+2] = sw[x*4+2];
         }
     }
 }
 
 static void draw_cursor(void) {
-    if (!cursor_visible || !fb_pixels || mouse_fd < 0) return;
+    if (!cursor_visible || !de_pixels || mouse_fd < 0) return;
     int cx = pointer_x, cy = pointer_y;
-    uint32_t color = 0xFFFFFFFF, outline = 0x00000000;
-    static const uint8_t arrow[16] = {0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE,0xFF,0xFF,0xF0,0xB0,0x18,0x18,0x0C,0x0C,0x06};
-    for (int row = 0; row < 16; row++) {
-        for (int col = 0; col < 8; col++) {
-            if (!(arrow[row] & (0x80 >> col))) continue;
-            int px = cx + col, py = cy + row;
-            if (px < 0 || px >= fb_width || py < 0 || py >= fb_height) continue;
-            size_t off = (size_t)py * (size_t)fb_width + (size_t)px;
-            if (col == 0 || row == 0 || !(arrow[row] & (0x80 >> (col - 1))) || !(arrow[row - 1] & (0x80 >> col)))
-                fb_pixels[off] = outline;
-            else fb_pixels[off] = color;
-        }
-    }
+
+    /* arrow cursor via Cairo */
+    cairo_set_source_rgba(cr, 0, 0, 0, 1);
+    cairo_move_to(cr, (double)cx, (double)cy);
+    cairo_line_to(cr, (double)cx, (double)(cy + 16));
+    cairo_line_to(cr, (double)(cx + 5), (double)(cy + 12));
+    cairo_line_to(cr, (double)(cx + 9), (double)(cy + 18));
+    cairo_line_to(cr, (double)(cx + 12), (double)(cy + 16));
+    cairo_line_to(cr, (double)(cx + 7), (double)(cy + 10));
+    cairo_line_to(cr, (double)(cx + 12), (double)(cy + 7));
+    cairo_close_path(cr);
+    cairo_fill(cr);
+
+    /* white outline */
+    cairo_set_source_rgba(cr, 1, 1, 1, 1);
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, (double)cx, (double)cy);
+    cairo_line_to(cr, (double)cx, (double)(cy + 16));
+    cairo_line_to(cr, (double)(cx + 5), (double)(cy + 12));
+    cairo_line_to(cr, (double)(cx + 9), (double)(cy + 18));
+    cairo_line_to(cr, (double)(cx + 12), (double)(cy + 16));
+    cairo_line_to(cr, (double)(cx + 7), (double)(cy + 10));
+    cairo_line_to(cr, (double)(cx + 12), (double)(cy + 7));
+    cairo_close_path(cr);
+    cairo_stroke(cr);
 }
 
-static int send_all(int fd, const void *buffer, size_t length) {
-    const uint8_t *c = (const uint8_t *)buffer;
-    size_t rem = length;
+/* ─── send helpers ──────────────────────────────────────────────────── */
+static int send_all(int fd, const void *buf, size_t len) {
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t rem = len;
     while (rem > 0) {
-        ssize_t s = send(fd, c, rem, 0);
-        if (s > 0) { c += (size_t)s; rem -= (size_t)s; continue; }
+        ssize_t s = send(fd, p, rem, 0);
+        if (s > 0) { p += (size_t)s; rem -= (size_t)s; continue; }
         if (s == 0) { errno = EPIPE; return -1; }
         if (errno == EINTR) continue;
         if (errno == EAGAIN) { usleep(1000); continue; }
@@ -168,40 +194,32 @@ static int send_msg(int fd, uint32_t type, const void *payload, uint32_t sz) {
     return 0;
 }
 
+/* ─── surface management ────────────────────────────────────────────── */
 static struct xnx_surface *find_surf(uint32_t id) {
-    for (int i = 0; i < num_surfaces; ++i) if (surfaces[i].id == id) return &surfaces[i];
+    for (int i = 0; i < num_surfaces; ++i)
+        if (surfaces[i].id == id) return &surfaces[i];
     return NULL;
-}
-
-static int surf_idx(uint32_t id) {
-    for (int i = 0; i < num_surfaces; ++i) if (surfaces[i].id == id) return i;
-    return -1;
 }
 
 static void ensure_focus(void) {
     struct xnx_surface *f = find_surf(focused_surface_id);
-    if (f && f->visible && f->image) return;
+    if (f && f->visible && f->image && !f->minimized) return;
     struct xnx_surface *best = NULL;
     for (int i = 0; i < num_surfaces; ++i) {
-        if (!surfaces[i].visible || !surfaces[i].image) continue;
+        if (!surfaces[i].visible || !surfaces[i].image || surfaces[i].minimized) continue;
         if (!best || surfaces[i].z_order > best->z_order) best = &surfaces[i];
     }
     focused_surface_id = best ? best->id : 0;
+    for (int i = 0; i < num_surfaces; ++i)
+        surfaces[i].focused = (surfaces[i].id == focused_surface_id);
 }
 
 static void focus_surf(struct xnx_surface *s) {
     if (!s) { ensure_focus(); return; }
     s->z_order = next_z_order++;
     focused_surface_id = s->id;
-}
-
-static void flush_fb(void) {
-    if (!fb_hw_pixels || !fb_pixels || !fb_hw_pitch) return;
-    for (int y = 0; y < fb_height; ++y) {
-        uint8_t *hw = (uint8_t *)fb_hw_pixels + (size_t)y * fb_hw_pitch;
-        uint8_t *sw = (uint8_t *)fb_pixels + (size_t)y * (size_t)fb_width * 4u;
-        for (int x = 0; x < fb_width; ++x) { hw[x*3] = sw[x*4]; hw[x*3+1] = sw[x*4+1]; hw[x*3+2] = sw[x*4+2]; }
-    }
+    for (int i = 0; i < num_surfaces; ++i)
+        surfaces[i].focused = (surfaces[i].id == focused_surface_id);
 }
 
 static void drop_surf(uint32_t id) {
@@ -221,7 +239,6 @@ static void remove_client(int idx) {
     if (cl->fd >= 0) close(cl->fd);
     memset(cl, 0, sizeof(*cl));
     clients[idx] = clients[--num_clients];
-    if (num_surfaces == 0) memset(fb_pixels, 0, fb_size);
 }
 
 static struct xnx_client *add_client(int fd) {
@@ -243,99 +260,255 @@ static int create_surf(struct xnx_client *cl, uint32_t w, uint32_t h, uint32_t *
     memset(s, 0, sizeof(*s));
     s->id = id; s->client_fd = cl->fd; s->image = img;
     s->width = w; s->height = h; s->visible = 1;
-    s->x = (fb_width - (int)w) / 2; s->y = (fb_height - (int)h) / 2;
+    s->x = (fb_width - (int)w) / 2;
+    s->y = (fb_height - (int)h) / 2;
     cl->surface_ids[cl->num_surfaces++] = id;
-    *out = id; focus_surf(s);
+    *out = id;
+    focus_surf(s);
     return 0;
 }
 
-/* ---- Compositing with decorations ---- */
+/* ─── cairo rendering ──────────────────────────────────────────────── */
+static void cairo_init(void) {
+    crs = cairo_image_surface_create_for_data(
+        (unsigned char *)de_pixels, CAIRO_FORMAT_ARGB32,
+        fb_width, fb_height, fb_width * 4);
+    cr = cairo_create(crs);
 
+    memset(font_data, 0, sizeof(font_data));
+    int fd = open(FONT_PATH, O_RDONLY);
+    if (fd >= 0) {
+        for (;;) {
+            int n = read(fd, font_data + font_data_len, (unsigned)(sizeof(font_data) - (size_t)font_data_len));
+            if (n <= 0) break;
+            font_data_len += n;
+            if (font_data_len >= (int)sizeof(font_data)) break;
+        }
+        close(fd);
+    }
+
+    if (FT_Init_FreeType(&ft_lib) == 0 && font_data_len > 0) {
+        if (FT_New_Memory_Face(ft_lib, (const FT_Byte *)font_data, (FT_Long)font_data_len, 0, &ft_face) == 0) {
+            FT_Set_Pixel_Sizes(ft_face, 0, FONT_SIZE);
+            cr_font = cairo_ft_font_face_create_for_ft_face(ft_face, 0);
+            cairo_set_font_face(cr, cr_font);
+            cairo_set_font_size(cr, FONT_SIZE);
+            cairo_font_extents_t fe;
+            cairo_font_extents(cr, &fe);
+            font_ascent = (int)(fe.ascent + 0.5);
+            font_height = (int)(fe.height + 0.5);
+            cairo_text_extents_t te;
+            cairo_text_extents(cr, "W", &te);
+            font_w = (int)(te.x_advance + 0.5);
+            if (font_w < 1) font_w = FONT_SIZE / 2;
+        }
+    }
+}
+
+static void cairo_rgba(uint32_t col, double *r, double *g, double *b, double *a) {
+    *a = ((col >> 24) & 0xFF) / 255.0;
+    *r = ((col >> 16) & 0xFF) / 255.0;
+    *g = ((col >> 8)  & 0xFF) / 255.0;
+    *b = (col & 0xFF) / 255.0;
+}
+
+static void draw_rect(int x, int y, int w, int h, uint32_t col) {
+    double r, g, b, a;
+    cairo_rgba(col, &r, &g, &b, &a);
+    cairo_set_source_rgba(cr, r, g, b, a);
+    cairo_rectangle(cr, (double)x, (double)y, (double)w, (double)h);
+    cairo_fill(cr);
+}
+
+static void draw_rect_outline(int x, int y, int w, int h, uint32_t col, int lw) {
+    double r, g, b, a;
+    cairo_rgba(col, &r, &g, &b, &a);
+    cairo_set_source_rgba(cr, r, g, b, a);
+    cairo_set_line_width(cr, (double)lw);
+    cairo_rectangle(cr, (double)x + 0.5, (double)y + 0.5, (double)(w - 1), (double)(h - 1));
+    cairo_stroke(cr);
+}
+
+static void draw_rounded_rect(int x, int y, int w, int h, int rad, uint32_t col) {
+    double r, g, b, a;
+    cairo_rgba(col, &r, &g, &b, &a);
+    cairo_set_source_rgba(cr, r, g, b, a);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, (double)(x + w - rad), (double)(y + rad), (double)rad, -M_PI/2, 0);
+    cairo_arc(cr, (double)(x + w - rad), (double)(y + h - rad), (double)rad, 0, M_PI/2);
+    cairo_arc(cr, (double)(x + rad), (double)(y + h - rad), (double)rad, M_PI/2, M_PI);
+    cairo_arc(cr, (double)(x + rad), (double)(y + rad), (double)rad, M_PI, 3*M_PI/2);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+}
+
+static void draw_shadow(int x, int y, int w, int h, int radius) {
+    for (int i = radius; i > 0; --i) {
+        double a = 0.12 * (1.0 - (double)i / (double)radius);
+        cairo_set_source_rgba(cr, 0, 0, 0, a);
+        cairo_rectangle(cr, (double)(x - i), (double)(y - i),
+                        (double)(w + 2*i), (double)(h + 2*i));
+        cairo_fill(cr);
+    }
+}
+
+static void draw_text(int x, int y, const char *text, uint32_t col) {
+    if (!text || !text[0]) return;
+    double r, g, b, a;
+    cairo_rgba(col, &r, &g, &b, &a);
+    cairo_set_source_rgba(cr, r, g, b, a);
+    cairo_move_to(cr, (double)x, (double)(y + font_ascent));
+    cairo_show_text(cr, text);
+}
+
+static void draw_text_centered(int x, int y, int w, int h, const char *text, uint32_t col) {
+    if (!text) return;
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, text, &te);
+    int tx = x + (w - (int)te.x_advance) / 2;
+    int ty = y + (h - font_height) / 2;
+    draw_text(tx, ty, text, col);
+}
+
+static int text_width(const char *text) {
+    if (!text || !text[0]) return 0;
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, text, &te);
+    return (int)te.x_advance;
+}
+
+/* ─── hit testing ───────────────────────────────────────────────────── */
+static int hit_test_titlebar(struct xnx_surface *s, int mx, int my) {
+    int tb_x = s->x - BORDER_W;
+    int tb_y = s->y - TITLE_BAR_H - BORDER_W;
+    int tb_w = (int)s->width + 2 * BORDER_W;
+    return (mx >= tb_x && mx < tb_x + tb_w && my >= tb_y && my < tb_y + TITLE_BAR_H);
+}
+
+static int hit_test_close(struct xnx_surface *s, int mx, int my) {
+    int cb_x = s->x - BORDER_W + (int)s->width + 2*BORDER_W - BORDER_W - CLOSE_BTN_SIZE - 6;
+    int cb_y = s->y - TITLE_BAR_H - BORDER_W + (TITLE_BAR_H - CLOSE_BTN_SIZE) / 2;
+    return (mx >= cb_x && mx < cb_x + CLOSE_BTN_SIZE && my >= cb_y && my < cb_y + CLOSE_BTN_SIZE);
+}
+
+static int hit_test_min(struct xnx_surface *s, int mx, int my) {
+    int mb_x = s->x - BORDER_W + (int)s->width + 2*BORDER_W - BORDER_W - CLOSE_BTN_SIZE - 6 - MIN_BTN_SIZE - 4;
+    int mb_y = s->y - TITLE_BAR_H - BORDER_W + (TITLE_BAR_H - MIN_BTN_SIZE) / 2;
+    return (mx >= mb_x && mx < mb_x + MIN_BTN_SIZE && my >= mb_y && my < mb_y + MIN_BTN_SIZE);
+}
+
+static int hit_test_max(struct xnx_surface *s, int mx, int my) {
+    int xb_x = s->x - BORDER_W + (int)s->width + 2*BORDER_W - BORDER_W - CLOSE_BTN_SIZE - 6 - 2*(MIN_BTN_SIZE + 4);
+    int xb_y = s->y - TITLE_BAR_H - BORDER_W + (TITLE_BAR_H - MAX_BTN_SIZE) / 2;
+    return (mx >= xb_x && mx < xb_x + MAX_BTN_SIZE && my >= xb_y && my < xb_y + MAX_BTN_SIZE);
+}
+
+static int hit_test_resize(struct xnx_surface *s, int mx, int my) {
+    int rx = s->x - RESIZE_HANDLE;
+    int ry = s->y - RESIZE_HANDLE;
+    int rw = (int)s->width + 2*RESIZE_HANDLE;
+    int rh = (int)s->height + 2*RESIZE_HANDLE;
+    if (mx < rx || mx >= rx + rw || my < ry || my >= ry + rh) return 0;
+    if (my < s->y && mx >= s->x - BORDER_W && mx < s->x + (int)s->width + BORDER_W) return 0;
+    int edge = 0;
+    if (mx < s->x) edge |= 1;
+    if (mx >= s->x + (int)s->width) edge |= 2;
+    if (my < s->y) edge |= 4;
+    if (my >= s->y + (int)s->height) edge |= 8;
+    return edge;
+}
+
+/* ─── surface compositing with decorations ──────────────────────────── */
 static void composite_surfaces(void) {
-    if (!framebuffer || !fb_pixels) return;
-
-    /* Desktop background */
-    fill_rect(0, 0, fb_width, fb_height, COL_DESK_BG);
-
     int z = 0;
     while (1) {
         struct xnx_surface *next = NULL;
         for (int i = 0; i < num_surfaces; ++i) {
             struct xnx_surface *s = &surfaces[i];
-            if (!s->visible || !s->image || s->z_order < z) continue;
+            if (!s->visible || !s->image || s->z_order < z || s->minimized) continue;
             if (!next || s->z_order < next->z_order) next = s;
         }
         if (!next) break;
 
-        int focused = (next->id == focused_surface_id);
+        int win_x = next->x - BORDER_W;
+        int win_y = next->y - TITLE_BAR_H - BORDER_W;
+        int win_w = (int)next->width + 2 * BORDER_W;
+        int win_h = (int)next->height + TITLE_BAR_H + 2 * BORDER_W;
 
-        /* Window content position */
-        int dx = next->x, dy = next->y, sx = 0, sy = 0;
-        unsigned int sw = next->width, sh = next->height;
-        int w = (int)sw, h = (int)sh;
+        /* shadow */
+        draw_shadow(next->x, next->y - TITLE_BAR_H, (int)next->width + 2*BORDER_W,
+                    (int)next->height + TITLE_BAR_H + 2*BORDER_W, 8);
 
-        /* Title bar coordinates */
-        int tb_x = dx - BORDER_W;
-        int tb_y = dy - TITLE_BAR_H - BORDER_W;
-        int tb_w = (int)sw + 2 * BORDER_W;
-        int tb_h = TITLE_BAR_H;
+        /* border */
+        uint32_t brd = next->focused ? COL_BORDER_FOC : COL_BORDER;
+        draw_rect_outline(win_x, win_y, win_w, win_h, brd, BORDER_W);
 
-        /* Border coordinates (full decoration rectangle) */
-        int brd_x = dx - BORDER_W;
-        int brd_y = dy - TITLE_BAR_H - BORDER_W;
-        int brd_w = (int)sw + 2 * BORDER_W;
-        int brd_h = (int)sh + TITLE_BAR_H + 2 * BORDER_W;
+        /* title bar */
+        draw_rect(win_x + BORDER_W, win_y, win_w - 2*BORDER_W, TITLE_BAR_H, COL_TITLE_BG);
 
-        uint32_t brd_col = focused ? COL_BORDER_FOCUS : COL_BORDER;
+        /* title text */
+        draw_text(win_x + BORDER_W + 8, win_y + (TITLE_BAR_H - font_height) / 2,
+                  next->title, next->focused ? COL_TITLE_FG : COL_TEXT_DIM);
 
-        /* Draw border */
-        fill_rect(brd_x, brd_y, brd_w, BORDER_W, brd_col);
-        fill_rect(brd_x, brd_y + brd_h - BORDER_W, brd_w, BORDER_W, brd_col);
-        fill_rect(brd_x, brd_y, BORDER_W, brd_h, brd_col);
-        fill_rect(brd_x + brd_w - BORDER_W, brd_y, BORDER_W, brd_h, brd_col);
+        /* close button */
+        int cb_x = win_x + win_w - BORDER_W - CLOSE_BTN_SIZE - 6;
+        int cb_y = win_y + (TITLE_BAR_H - CLOSE_BTN_SIZE) / 2;
+        draw_rounded_rect(cb_x, cb_y, CLOSE_BTN_SIZE, CLOSE_BTN_SIZE, 3,
+                          (pointer_x >= cb_x && pointer_x < cb_x + CLOSE_BTN_SIZE &&
+                           pointer_y >= cb_y && pointer_y < cb_y + CLOSE_BTN_SIZE) ?
+                          COL_CLOSE_HOVER : COL_CLOSE_BTN);
+        cairo_set_source_rgba(cr, 1, 1, 1, 1);
+        cairo_set_line_width(cr, 1.5);
+        int m = 3;
+        cairo_move_to(cr, (double)(cb_x + m), (double)(cb_y + m));
+        cairo_line_to(cr, (double)(cb_x + CLOSE_BTN_SIZE - m), (double)(cb_y + CLOSE_BTN_SIZE - m));
+        cairo_move_to(cr, (double)(cb_x + CLOSE_BTN_SIZE - m), (double)(cb_y + m));
+        cairo_line_to(cr, (double)(cb_x + m), (double)(cb_y + CLOSE_BTN_SIZE - m));
+        cairo_stroke(cr);
 
-        /* Draw title bar */
-        fill_rect(tb_x + BORDER_W, tb_y, tb_w - 2 * BORDER_W, tb_h, COL_TITLE_BG);
+        /* minimize button */
+        int mb_x = cb_x - MIN_BTN_SIZE - 4;
+        int mb_y = win_y + (TITLE_BAR_H - MIN_BTN_SIZE) / 2;
+        draw_rounded_rect(mb_x, mb_y, MIN_BTN_SIZE, MIN_BTN_SIZE, 3,
+                          (pointer_x >= mb_x && pointer_x < mb_x + MIN_BTN_SIZE &&
+                           pointer_y >= mb_y && pointer_y < mb_y + MIN_BTN_SIZE) ?
+                          COL_MIN_BTN : 0x803FB950);
+        cairo_set_source_rgba(cr, 1, 1, 1, 1);
+        cairo_set_line_width(cr, 1.5);
+        cairo_move_to(cr, (double)(mb_x + 3), (double)(mb_y + MIN_BTN_SIZE/2));
+        cairo_line_to(cr, (double)(mb_x + MIN_BTN_SIZE - 3), (double)(mb_y + MIN_BTN_SIZE/2));
+        cairo_stroke(cr);
 
-        /* Title text */
-        int text_x = tb_x + BORDER_W + 8;
-        int text_y = tb_y + (TITLE_BAR_H - WM_FONT_H) / 2;
-        if (text_y < tb_y) text_y = tb_y;
-        draw_string(text_x, text_y, next->title, COL_TITLE_FG, COL_TITLE_BG);
+        /* maximize button */
+        int xb_x = mb_x - MAX_BTN_SIZE - 4;
+        int xb_y = win_y + (TITLE_BAR_H - MAX_BTN_SIZE) / 2;
+        draw_rounded_rect(xb_x, xb_y, MAX_BTN_SIZE, MAX_BTN_SIZE, 3,
+                          (pointer_x >= xb_x && pointer_x < xb_x + MAX_BTN_SIZE &&
+                           pointer_y >= xb_y && pointer_y < xb_y + MAX_BTN_SIZE) ?
+                          COL_MAX_BTN : 0x8058A6FF);
+        draw_rect_outline(xb_x + 3, xb_y + 3, MAX_BTN_SIZE - 6, MAX_BTN_SIZE - 6, COL_WHITE, 1.5);
 
-        /* Close button (red square, top-right) */
-        int cb_x = tb_x + tb_w - BORDER_W - CLOSE_BTN_SIZE - 4;
-        int cb_y = tb_y + (TITLE_BAR_H - CLOSE_BTN_SIZE) / 2;
-        fill_rect(cb_x, cb_y, CLOSE_BTN_SIZE, CLOSE_BTN_SIZE, COL_CLOSE_BTN);
-        /* X mark on close button */
-        for (int i = 2; i < CLOSE_BTN_SIZE - 2; i++) {
-            int px1 = cb_x + i, px2 = cb_x + CLOSE_BTN_SIZE - 1 - i;
-            int py1 = cb_y + i, py2 = cb_y + i;
-            if (px1 >= 0 && px1 < fb_width && py1 >= 0 && py1 < fb_height)
-                fb_pixels[py1 * fb_width + px1] = COL_TITLE_FG;
-            if (px2 >= 0 && px2 < fb_width && py2 >= 0 && py2 < fb_height)
-                fb_pixels[py2 * fb_width + px2] = COL_TITLE_FG;
+        /* composite window content */
+        int dx = next->x, dy = next->y;
+        int sx = 0, sy = 0;
+        int sw = (int)next->width, sh = (int)next->height;
+        int cw = sw, ch = sh;
+        if (dx < 0) { sx = -dx; cw += dx; dx = 0; }
+        if (dy < 0) { sy = -dy; ch += dy; dy = 0; }
+        if (dx < fb_width && dy < fb_height && sx < sw && sy < sh) {
+            if (dx + cw > fb_width) cw = fb_width - dx;
+            if (dy + ch > fb_height) ch = fb_height - dy;
+            if (sx + cw > sw) cw = sw - sx;
+            if (sy + ch > sh) ch = sh - sy;
+            if (cw > 0 && ch > 0)
+                pixman_image_composite32(PIXMAN_OP_OVER, next->image, NULL, framebuffer,
+                    (unsigned)sx, (unsigned)sy, 0, 0, dx, dy, (unsigned)cw, (unsigned)ch);
         }
-
-        /* Clip compositing to window content area */
-        if (dx < 0) { sx = -dx; w += dx; dx = 0; }
-        if (dy < 0) { sy = -dy; h += dy; dy = 0; }
-        if (dx >= fb_width || dy >= fb_height || sx >= (int)sw || sy >= (int)sh) { z = next->z_order + 1; continue; }
-        if (dx + w > fb_width) w = fb_width - dx;
-        if (dy + h > fb_height) h = fb_height - dy;
-        if (sx + w > (int)sw) w = (int)sw - sx;
-        if (sy + h > (int)sh) h = (int)sh - sy;
-
-        if (w > 0 && h > 0)
-            pixman_image_composite32(PIXMAN_OP_OVER, next->image, NULL, framebuffer,
-                sx, sy, 0, 0, dx, dy, (unsigned)w, (unsigned)h);
         z = next->z_order + 1;
     }
-    flush_fb();
 }
 
-/* ---- Protocol handlers ---- */
-
+/* ─── protocol handlers ─────────────────────────────────────────────── */
 static int handle_client_msg(struct xnx_client *cl) {
     uint8_t *p = cl->read_buf;
     uint32_t type = cl->current_header.type;
@@ -414,7 +587,7 @@ static int handle_client_msg(struct xnx_client *cl) {
         case XNX_SET_CURSOR: {
             if (sz < sizeof(struct xnx_set_cursor)) return -1;
             struct xnx_set_cursor *sc = (struct xnx_set_cursor *)p;
-            pointer_x = sc->x; pointer_y = sc->y; cursor_type = sc->cursor_type;
+            pointer_x = sc->x; pointer_y = sc->y;
             return 0;
         }
         case XNX_COMMIT: {
@@ -490,20 +663,38 @@ static int read_client(struct xnx_client *cl) {
 static int setup_socket(void) {
     unlink(XNX_SOCKET_PATH);
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) { fprintf(stderr, "socket failed\n"); return -1; }
+    if (fd < 0) return -1;
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     strncpy(addr.sun_path, XNX_SOCKET_PATH, sizeof(addr.sun_path) - 1);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) { fprintf(stderr, "bind failed\n"); close(fd); return -1; }
-    if (listen(fd, XNX_BACKLOG) < 0) { fprintf(stderr, "listen failed\n"); close(fd); return -1; }
-    int fl = fcntl(fd, F_GETFD, 0); if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
+    if (listen(fd, XNX_BACKLOG) < 0) { close(fd); return -1; }
     return fd;
 }
 
+/* ─── main frame ────────────────────────────────────────────────────── */
+static void draw_frame(void) {
+    /* clear to desktop background */
+    cairo_set_source_rgba(cr, 0.051, 0.067, 0.090, 1.0);
+    cairo_paint(cr);
+
+    /* composite client surfaces with decorations */
+    composite_surfaces();
+
+    /* draw cursor on top of everything */
+    draw_cursor();
+
+    /* flush cairo to pixel buffer */
+    cairo_surface_flush(crs);
+
+    /* copy to hardware framebuffer */
+    flush_fb();
+}
+
+/* ─── main ──────────────────────────────────────────────────────────── */
 int main(void) {
-    int fb_fd;
     struct xnx_fb_var_screeninfo vinfo;
 
-    printf("XNX Compositor v0.4 (display server) starting...\n");
+    printf("XNX Compositor v1.0 (window manager) starting...\n");
     fflush(stdout);
 
     listener_fd = setup_socket();
@@ -511,41 +702,56 @@ int main(void) {
 
     fb_fd = open("/dev/fb0", O_RDWR);
     if (fb_fd < 0) { fprintf(stderr, "Failed to open /dev/fb0\n"); return 1; }
-    if (ioctl(fb_fd, XNX_FBIOGET_VSCREENINFO, &vinfo) < 0) { fprintf(stderr, "Failed fb info\n"); close(fb_fd); return 1; }
+    if (ioctl(fb_fd, XNX_FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        fprintf(stderr, "Failed fb info\n"); close(fb_fd); return 1;
+    }
+    /* release the framebuffer from the kernel console */
+    ioctl(fb_fd, XNX_FBIODISOWN, 0);
 
     fb_width = (int)vinfo.xres; fb_height = (int)vinfo.yres;
     fb_bpp = (int)vinfo.bits_per_pixel; if (fb_bpp < 1) fb_bpp = 32;
-    fb_hw_pitch = (size_t)vinfo.xres_virtual * (size_t)vinfo.bits_per_pixel / 8u;
-    if (fb_hw_pitch == 0) fb_hw_pitch = (size_t)fb_width * 4u;
+    fb_hw_pitch = (size_t)vinfo.pitch;
+    if (fb_hw_pitch == 0) fb_hw_pitch = (size_t)vinfo.xres_virtual * (size_t)vinfo.bits_per_pixel / 8u;
+    if (fb_hw_pitch == 0) fb_hw_pitch = (size_t)fb_width * (size_t)(fb_bpp / 8);
 
     fb_size = (size_t)fb_width * (size_t)fb_height * 4u;
-    fb_pixels = calloc(1, fb_size);
-    if (!fb_pixels) { fprintf(stderr, "alloc fail\n"); close(fb_fd); return 1; }
+    de_pixels = calloc(1, fb_size);
+    if (!de_pixels) { fprintf(stderr, "alloc fail\n"); close(fb_fd); return 1; }
 
     size_t hw_map_size = fb_hw_pitch * (size_t)fb_height;
     fb_hw_pixels = mmap(NULL, hw_map_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
-    if (fb_hw_pixels == MAP_FAILED) { fprintf(stderr, "mmap fail\n"); free(fb_pixels); close(fb_fd); return 1; }
+    if (fb_hw_pixels == MAP_FAILED) { fprintf(stderr, "mmap fail\n"); free(de_pixels); close(fb_fd); return 1; }
 
-    framebuffer = pixman_image_create_bits(PIXMAN_a8r8g8b8, fb_width, fb_height, fb_pixels, fb_width * 4);
-    if (!framebuffer) { fprintf(stderr, "pixman fail\n"); munmap(fb_hw_pixels, hw_map_size); free(fb_pixels); close(fb_fd); return 1; }
-
-    memset(fb_pixels, 0, fb_size); flush_fb();
+    framebuffer = pixman_image_create_bits(PIXMAN_a8r8g8b8, fb_width, fb_height, de_pixels, fb_width * 4);
+    if (!framebuffer) {
+        fprintf(stderr, "pixman fail\n");
+        munmap(fb_hw_pixels, hw_map_size); free(de_pixels); close(fb_fd); return 1;
+    }
 
     mouse_fd = open("/dev/mouse", O_RDONLY);
-    if (mouse_fd >= 0) { printf("XNX: mouse opened\n"); pointer_x = fb_width / 2; pointer_y = fb_height / 2; }
-    else printf("XNX: no mouse\n");
+    if (mouse_fd >= 0) {
+        printf("WM: mouse opened\n");
+        pointer_x = fb_width / 2;
+        pointer_y = fb_height / 2;
+    }
 
-    printf("Listening on %s (%dx%d)\n", XNX_SOCKET_PATH, fb_width, fb_height);
+    /* init cairo */
+    cairo_init();
+
+    printf("WM listening on %s (%dx%d)\n", XNX_SOCKET_PATH, fb_width, fb_height);
+
+    /* render first frame */
+    draw_frame();
 
     while (1) {
         struct pollfd fds[MAX_CLIENTS + 3];
-        int client_slots[MAX_CLIENTS], nfds = 0, stdin_idx = -1, mouse_idx = -1, tracked = 0;
+        int client_slots[MAX_CLIENTS], nfds = 0, mouse_idx = -1, tracked = 0;
 
         fds[nfds].fd = listener_fd; fds[nfds].events = POLLIN; fds[nfds].revents = 0; nfds++;
-
-        if (num_surfaces > 0) { stdin_idx = nfds; fds[nfds].fd = STDIN_FILENO; fds[nfds].events = POLLIN; fds[nfds].revents = 0; nfds++; }
-        if (mouse_fd >= 0) { mouse_idx = nfds; fds[nfds].fd = mouse_fd; fds[nfds].events = POLLIN; fds[nfds].revents = 0; nfds++; }
-
+        if (mouse_fd >= 0) {
+            mouse_idx = nfds;
+            fds[nfds].fd = mouse_fd; fds[nfds].events = POLLIN; fds[nfds].revents = 0; nfds++;
+        }
         for (int i = 0; i < num_clients; ++i) {
             if (!clients[i].active) continue;
             client_slots[tracked++] = i;
@@ -554,154 +760,183 @@ int main(void) {
 
         if (poll(fds, (nfds_t)nfds, FRAME_INTERVAL_MS) < 0 && errno != EINTR) break;
 
+        /* accept new connections */
         if (fds[0].revents & POLLIN) {
             struct sockaddr_un ca; socklen_t clen = sizeof(ca);
             int cf = accept(listener_fd, (struct sockaddr *)&ca, &clen);
             if (cf >= 0 && !add_client(cf)) close(cf);
         }
 
-        if (stdin_idx >= 0 && (fds[stdin_idx].revents & POLLIN)) {
-            unsigned char ch;
-            if (read(STDIN_FILENO, &ch, 1) == 1) {
-                /* Track modifier keys for WM shortcuts */
-                if (ch == 0x2D || ch == 0xDD) super_held = (ch == 0x2D) ? 1 : 0; /* L-Alt/AltGr */
-                if (ch == 0x2A || ch == 0x36) shift_held = 1;
-                if (ch == 0xAA || ch == 0xB6) shift_held = 0;
-
-                /* Super+Shift+Arrow: move focused window */
-                if (super_held && shift_held) {
-                    ensure_focus();
-                    struct xnx_surface *s = find_surf(focused_surface_id);
-                    if (s) {
-                        int moved = 0;
-                        switch (ch) {
-                            case 0x48: s->y -= MOVE_STEP; moved = 1; break; /* Up */
-                            case 0x50: s->y += MOVE_STEP; moved = 1; break; /* Down */
-                            case 0x4B: s->x -= MOVE_STEP; moved = 1; break; /* Left */
-                            case 0x4D: s->x += MOVE_STEP; moved = 1; break; /* Right */
-                        }
-                        if (moved) continue; /* Don't forward the key */
-                    }
-                }
-
-                ensure_focus();
-                struct xnx_surface *s = find_surf(focused_surface_id);
-                if (s) {
-                    struct xnx_key_event ke = { .surface_id = s->id, .keycode = ch, .pressed = 1 };
-                    send_msg(s->client_fd, XNX_KEY_EVENT, &ke, sizeof(ke));
-                }
-            }
-        }
-
+        /* mouse */
         if (mouse_idx >= 0 && (fds[mouse_idx].revents & POLLIN)) {
             struct { uint8_t buttons; int8_t dx; int8_t dy; } mp;
             if (read(mouse_fd, &mp, sizeof(mp)) == sizeof(mp)) {
                 pointer_x += mp.dx; pointer_y -= mp.dy;
-                if (pointer_x < 0) pointer_x = 0; if (pointer_y < 0) pointer_y = 0;
-                if (pointer_x >= fb_width) pointer_x = fb_width - 1;
-                if (pointer_y >= fb_height) pointer_y = fb_height - 1;
+                pointer_x = clamp(pointer_x, 0, fb_width - 1);
+                pointer_y = clamp(pointer_y, 0, fb_height - 1);
 
-                static uint8_t prev_buttons = 0;
                 int pressed = (mp.buttons & 1) && !(prev_buttons & 1);
                 int released = !(mp.buttons & 1) && (prev_buttons & 1);
+                int rpressed = (mp.buttons & 2) && !(prev_buttons & 2);
                 prev_buttons = mp.buttons;
 
-                /* Drag-to-move: if dragging, update surface position */
-                if (dragging_surface_id >= 0 && mp.buttons & 1) {
-                    struct xnx_surface *ds = find_surf((uint32_t)dragging_surface_id);
+                /* dragging window */
+                if (drag_surface_id >= 0 && (mp.buttons & 1)) {
+                    struct xnx_surface *ds = find_surf((uint32_t)drag_surface_id);
                     if (ds) {
                         ds->x = pointer_x - drag_offset_x;
                         ds->y = pointer_y - drag_offset_y;
                     }
                 }
-                if (dragging_surface_id >= 0 && released) {
-                    dragging_surface_id = -1;
-                }
+                if (drag_surface_id >= 0 && released) drag_surface_id = -1;
 
-                if (pressed) {
-                    /* Find surface under cursor (top-most) */
-                    struct xnx_surface *hit = NULL;
-                    for (int i = num_surfaces - 1; i >= 0; --i) {
-                        if (!surfaces[i].visible || !surfaces[i].image) continue;
-                        int sx = surfaces[i].x, sy = surfaces[i].y;
-                        int sw = (int)surfaces[i].width, sh = (int)surfaces[i].height;
-                        /* Check full decoration area including title bar */
-                        int full_x = sx - BORDER_W;
-                        int full_y = sy - TITLE_BAR_H - BORDER_W;
-                        int full_w = sw + 2 * BORDER_W;
-                        int full_h = sh + TITLE_BAR_H + 2 * BORDER_W;
-                        if (pointer_x >= full_x && pointer_x < full_x + full_w &&
-                            pointer_y >= full_y && pointer_y < full_y + full_h) {
-                            hit = &surfaces[i];
-                            break;
+                /* resizing window */
+                if (resize_surface_id > 0 && (mp.buttons & 1)) {
+                    struct xnx_surface *s = find_surf((uint32_t)resize_surface_id);
+                    if (s) {
+                        int dx = pointer_x - resize_orig_x - drag_offset_x;
+                        int dy = pointer_y - resize_orig_y - drag_offset_y;
+                        if (resize_edge & 1) {
+                            int nw = resize_orig_w - dx;
+                            if (nw > 100) { s->x = resize_orig_x + dx; s->width = (uint32_t)nw; }
+                        }
+                        if (resize_edge & 2) {
+                            int nw = resize_orig_w + dx;
+                            if (nw > 100) s->width = (uint32_t)nw;
+                        }
+                        if (resize_edge & 4) {
+                            int nh = resize_orig_h - dy;
+                            if (nh > 50) { s->y = resize_orig_y + dy; s->height = (uint32_t)nh; }
+                        }
+                        if (resize_edge & 8) {
+                            int nh = resize_orig_h + dy;
+                            if (nh > 50) s->height = (uint32_t)nh;
                         }
                     }
+                }
+                if (resize_surface_id > 0 && released) {
+                    resize_surface_id = 0;
+                    resize_edge = 0;
+                }
 
-                    if (hit) {
-                        focus_surf(hit);
+                /* left click */
+                if (pressed) {
+                    int hit = 0;
+                    for (int i = num_surfaces - 1; i >= 0; --i) {
+                        struct xnx_surface *s = &surfaces[i];
+                        if (!s->visible || !s->image || s->minimized) continue;
 
-                        /* Check close button */
-                        int tb_x = hit->x - BORDER_W;
-                        int tb_y = hit->y - TITLE_BAR_H - BORDER_W;
-                        int tb_w = (int)hit->width + 2 * BORDER_W;
-                        int cb_x = tb_x + tb_w - BORDER_W - CLOSE_BTN_SIZE - 4;
-                        int cb_y = tb_y + (TITLE_BAR_H - CLOSE_BTN_SIZE) / 2;
-                        if (pointer_x >= cb_x && pointer_x < cb_x + CLOSE_BTN_SIZE &&
-                            pointer_y >= cb_y && pointer_y < cb_y + CLOSE_BTN_SIZE) {
-                            /* Close: send close request then destroy */
-                            struct xnx_surface *s = find_surf(hit->id);
-                            if (s) {
-                                send_msg(s->client_fd, XNX_CLOSE_REQUEST, NULL, 0);
-                                drop_surf(hit->id);
+                        /* check close button */
+                        if (hit_test_close(s, pointer_x, pointer_y)) {
+                            send_msg(s->client_fd, XNX_CLOSE_REQUEST, NULL, 0);
+                            drop_surf(s->id);
+                            hit = 1; break;
+                        }
+                        /* check minimize button */
+                        if (hit_test_min(s, pointer_x, pointer_y)) {
+                            s->minimized = 1;
+                            ensure_focus();
+                            hit = 1; break;
+                        }
+                        /* check maximize button */
+                        if (hit_test_max(s, pointer_x, pointer_y)) {
+                            if (s->maximized) {
+                                s->x = s->prev_x; s->y = s->prev_y;
+                                s->width = (uint32_t)s->prev_w; s->height = (uint32_t)s->prev_h;
+                                s->maximized = 0;
+                            } else {
+                                s->prev_x = s->x; s->prev_y = s->y;
+                                s->prev_w = (int)s->width; s->prev_h = (int)s->height;
+                                s->x = 0; s->y = 0;
+                                s->width = (uint32_t)fb_width;
+                                s->height = (uint32_t)fb_height;
+                                s->maximized = 1;
                             }
+                            hit = 1; break;
                         }
-                        /* Check title bar for drag-to-move */
-                        else if (pointer_y < hit->y &&
-                                 pointer_x >= hit->x - BORDER_W &&
-                                 pointer_x < hit->x + (int)hit->width + BORDER_W) {
-                            dragging_surface_id = (int)hit->id;
-                            drag_offset_x = pointer_x - hit->x;
-                            drag_offset_y = pointer_y - hit->y;
+                        /* check resize handle */
+                        int re = hit_test_resize(s, pointer_x, pointer_y);
+                        if (re) {
+                            resize_surface_id = (int)s->id;
+                            resize_edge = re;
+                            resize_orig_x = s->x; resize_orig_y = s->y;
+                            resize_orig_w = (int)s->width; resize_orig_h = (int)s->height;
+                            drag_offset_x = pointer_x - s->x;
+                            drag_offset_y = pointer_y - s->y;
+                            hit = 1; break;
                         }
-                    } else {
-                        /* Click on desktop — unfocus */
+                        /* check title bar (drag) */
+                        if (hit_test_titlebar(s, pointer_x, pointer_y)) {
+                            drag_surface_id = (int)s->id;
+                            drag_offset_x = pointer_x - s->x;
+                            drag_offset_y = pointer_y - s->y;
+                            focus_surf(s);
+                            hit = 1; break;
+                        }
+                        /* check window body */
+                        int full_x = s->x - BORDER_W;
+                        int full_y = s->y - TITLE_BAR_H - BORDER_W;
+                        int full_w = (int)s->width + 2*BORDER_W;
+                        int full_h = (int)s->height + TITLE_BAR_H + 2*BORDER_W;
+                        if (pointer_x >= full_x && pointer_x < full_x + full_w &&
+                            pointer_y >= full_y && pointer_y < full_y + full_h) {
+                            focus_surf(s);
+                            hit = 1; break;
+                        }
+                    }
+                    if (!hit) {
                         focused_surface_id = 0;
                         ensure_focus();
                     }
                 }
 
-                /* Forward pointer event to focused surface (adjusted for decorations) */
-                ensure_focus();
-                struct xnx_surface *s = find_surf(focused_surface_id);
-                if (s) {
-                    struct xnx_pointer_event ev = {
-                        .surface_id = s->id,
-                        .x = pointer_x - s->x,
-                        .y = pointer_y - s->y,
-                        .buttons = mp.buttons,
-                    };
-                    send_msg(s->client_fd, XNX_POINTER_EVENT, &ev, sizeof(ev));
+                /* right click: restore minimized window */
+                if (rpressed) {
+                    for (int i = num_surfaces - 1; i >= 0; --i) {
+                        struct xnx_surface *s = &surfaces[i];
+                        if (!s->visible || !s->image || !s->minimized) continue;
+                        s->minimized = 0;
+                        focus_surf(s);
+                        break;
+                    }
+                }
+
+                /* forward to focused surface */
+                if (!drag_surface_id && !resize_surface_id) {
+                    ensure_focus();
+                    struct xnx_surface *s = find_surf(focused_surface_id);
+                    if (s) {
+                        struct xnx_pointer_event ev = {
+                            .surface_id = s->id,
+                            .x = pointer_x - s->x,
+                            .y = pointer_y - s->y,
+                            .buttons = mp.buttons,
+                        };
+                        send_msg(s->client_fd, XNX_POINTER_EVENT, &ev, sizeof(ev));
+                    }
                 }
             }
         }
 
-        int num_extra = (stdin_idx >= 0 ? 1 : 0) + (mouse_idx >= 0 ? 1 : 0);
-        for (int i = 0, fi = 1 + num_extra; i < tracked; ++i, ++fi) {
+        /* client messages */
+        for (int i = 0, fi = 1 + (mouse_idx >= 0 ? 1 : 0); i < tracked; ++i, ++fi) {
             int ci = client_slots[i];
             if (ci >= num_clients || !clients[ci].active) continue;
             if (fds[fi].revents & (POLLIN | POLLHUP | POLLERR))
                 if (read_client(&clients[ci]) < 0) remove_client(ci);
         }
 
-        composite_surfaces();
-        if (mouse_fd >= 0 && fb_pixels) { draw_cursor(); flush_fb(); }
+        /* render frame */
+        draw_frame();
     }
 
     if (listener_fd >= 0) close(listener_fd);
     if (mouse_fd >= 0) close(mouse_fd);
+    if (cr) cairo_destroy(cr);
+    if (crs) cairo_surface_destroy(crs);
     if (framebuffer) pixman_image_unref(framebuffer);
     if (fb_hw_pixels && fb_hw_pixels != MAP_FAILED) munmap(fb_hw_pixels, fb_hw_pitch * (size_t)fb_height);
-    if (fb_pixels) free(fb_pixels);
+    if (de_pixels) free(de_pixels);
     close(fb_fd); unlink(XNX_SOCKET_PATH);
     return 0;
 }

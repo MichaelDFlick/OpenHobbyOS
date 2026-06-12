@@ -46,12 +46,6 @@ static void start_xnx_compositor(void) {
     console_printf("[init] heap: %u KiB used, %u KiB free, largest=%u KiB\n",
                    stats_after.heap_used / 1024, stats_after.heap_free / 1024,
                    memory_largest_free_block() / 1024);
-
-    if (kernel_path_is_executable("/bin/xnx-compositor")) {
-        int pid = task_spawn_background("/bin/xnx-compositor");
-        console_printf("[init] XNX compositor spawn: pid=%d\n", pid);
-    }
-
 }
 
 extern u8 stack_top;
@@ -205,20 +199,6 @@ void kernel_main(u32 magic, u32 mbi_addr) {
     console_putc('\n');
 
     console_clear();
-    console_clear();
-    console_printf("[init] launching gtkdemo...\n");
-    {
-        memory_defragment();
-        int app_status = -1;
-        if (kernel_path_is_executable("/bin/gtkdemo")) {
-            const char *app_argv[] = {"/bin/gtkdemo", NULL};
-            app_status = task_run_argv_alongside(NULL, "/bin/gtkdemo", 1, app_argv);
-            console_printf("[init] gtkdemo exited with status %d\n", app_status);
-        } else {
-            console_printf("[init] gtkdemo not found\n");
-        }
-    }
-    console_clear();
     console_printf("[init] launching installer...\n");
     {
         memory_defragment();
@@ -249,6 +229,9 @@ void kernel_main(u32 magic, u32 mbi_addr) {
         } else {
             console_printf("[init] no shell found, halting\n");
             break;
+        }
+        if (app_status == 0) {
+            console_write("[init] session ended, restarting login\n");
         }
     }
     console_write("[init] halting\n");

@@ -27,7 +27,6 @@ MILKYWAY_BIN := $(PORTS_SYSROOT)/bin/milkyway
 FFMPEG_STAMP := $(PORTS_DIR)/ffmpeg/.built
 OHPLAY_BIN := $(PORTS_DIR)/ohplay/install/bin/ohplay
 GOSH_BIN := $(PORTS_SYSROOT)/bin/gosh
-GTKDEMO_BIN := $(PORTS_SYSROOT)/bin/gtkdemo
 
 PORTS_TINYGL_A := $(PORTS_SYSROOT)/lib/libtinygl.a
 PORTS_GEARS_BIN := $(PORTS_SYSROOT)/bin/gears
@@ -384,10 +383,6 @@ $(GOSH_BIN): user/gosh.c user/lib/syscall.c user/lib/runtime.c $(CAIRO_PC) $(FRE
 	mkdir -p $(PORTS_DIR)/gosh
 	ports/gosh/build-gosh.sh $(PORTS_DIR)/gosh $(PORTS_SYSROOT)
 
-$(GTKDEMO_BIN): user/gtkdemo/gtkdemo.c $(GTK_PC) $(XNX_COMPOSITOR) ports/gtkdemo/build-gtkdemo.sh | $(PORTS_DIR)
-	mkdir -p $(PORTS_DIR)/gtkdemo
-	ports/gtkdemo/build-gtkdemo.sh $(PORTS_DIR)/gtkdemo $(PORTS_SYSROOT)
-
 $(OHPLAY_BIN): ports/ohplay/build-ohplay.sh $(XNX_COMPOSITOR) $(FFMPEG_STAMP) $(ZLIB_PC) $(PORTS_SYSROOT)/.newlib.stamp | $(PORTS_DIR)
 	ports/ohplay/build-ohplay.sh $(PORTS_DIR)/ohplay $(PORTS_SYSROOT)
 
@@ -404,7 +399,7 @@ $(QTDECL_STAMP): ports/qtdeclarative/build-qtdeclarative.sh $(QT_STAMP)
 	ports/qtdeclarative/build-qtdeclarative.sh $(PORTS_DIR)/qtdeclarative $(PORTS_SYSROOT) || true
 	touch $@
 
-$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(GTKDEMO_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD | $(BUILD_DIR)
+$(INITRD): tools/build_initrd.sh tools/mkramdisk.py tools/rootfs_manifest.sh $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD | $(BUILD_DIR)
 	tools/build_initrd.sh $@
 
 $(DISK_IMG): $(USER_BINS) $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(PORTS_SYSROOT)/bin/doom $(CORUTILS_BIN) assets/Doom1.WAD tools/populate_disk.sh tools/rootfs_manifest.sh
@@ -458,8 +453,6 @@ ports-milkyway: $(MILKYWAY_BIN)
 
 ports-gosh: $(GOSH_BIN)
 
-ports-gtkdemo: $(GTKDEMO_BIN)
-
 ports-ohplay: $(OHPLAY_BIN)
 
 ports-lwip: ports/lwip/build-lwip.sh $(PORTS_SYSROOT)/.newlib.stamp
@@ -489,7 +482,7 @@ ports-qt: $(QT_STAMP)
 
 ports-qtdeclarative: $(QTDECL_STAMP)
 
-ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(GTKDEMO_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC) $(CORUTILS_BIN) $(EXPAT_PC) $(FONTCONFIG_PC) $(FRIBIDI_PC) $(PANGO_PC) $(GTK_PC)
+ports: $(FASTFETCH_BIN) $(XNX_COMPOSITOR) $(INSTALLER_BIN) $(MILKYWAY_BIN) $(GOSH_BIN) $(OHPLAY_BIN) $(PORTS_GEARS_BIN) $(QT_STAMP) $(PORTS_SYSROOT)/bin/doom $(LODEPNG_PC) $(CORUTILS_BIN) $(EXPAT_PC) $(FONTCONFIG_PC) $(FRIBIDI_PC) $(PANGO_PC) $(GTK_PC)
 
 run: run-gui
 

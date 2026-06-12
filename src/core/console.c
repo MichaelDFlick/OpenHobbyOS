@@ -457,6 +457,10 @@ int console_get_fb_info(console_fb_info_t *info) {
     return 1;
 }
 
+void console_fb_release(void) {
+    fb.available = false;
+}
+
 int console_get_dimensions(size_t *cols, size_t *rows) {
     if (!tsm_scr) return 0;
     *cols = tsm_screen_get_width(tsm_scr);

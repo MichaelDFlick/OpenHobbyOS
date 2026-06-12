@@ -322,6 +322,7 @@ struct fb_var_screeninfo {
 };
 
 #define FBIOGET_VSCREENINFO 0x4600
+#define FBIODISOWN          0x4601
 
 struct linux_stat64 {
     u64 st_dev;

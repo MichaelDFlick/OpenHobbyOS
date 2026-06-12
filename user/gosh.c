@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <cairo.h>
 #include <cairo-ft.h>
 #include <ft2build.h>
@@ -232,15 +234,16 @@ static int builtin_history(int argc, const char **argv);
 static int builtin_logout(int argc, const char **argv);
 static int builtin_chmod(int argc, const char **argv);
 static int builtin_sudo(int argc, const char **argv);
+static int builtin_mouse(int argc, const char **argv);
 static int execute_command_argv(int argc, const char **argv);
 static void maybe_emit_separator(void);
 
 static const struct builtin builtins[] = {
     {"cd", builtin_cd}, {"clear", builtin_clear}, {"chmod", builtin_chmod},
     {"echo", builtin_echo}, {"exit", builtin_exit}, {"export", builtin_export},
-    {"help", builtin_help}, {"history", builtin_history}, {"pwd", builtin_pwd},
-    {"id", builtin_id}, {"sudo", builtin_sudo},
-    {"whoami", builtin_whoami}, {0, 0}
+    {"help", builtin_help}, {"history", builtin_history}, {"logout", builtin_logout},
+    {"pwd", builtin_pwd}, {"id", builtin_id}, {"mouse", builtin_mouse},
+    {"sudo", builtin_sudo}, {"whoami", builtin_whoami}, {0, 0}
 };
 
 static int find_in_path(const char *cmd, char *resolved, unsigned int size) {
@@ -441,7 +444,7 @@ static int builtin_exit(int argc, const char **argv) {
 
 static int builtin_help(int argc, const char **argv) {
     (void)argc; (void)argv;
-    write_str("GOSH! - OpenHobbyOS Shell\nBuilt-in commands:\n  cd <dir>     Change directory\n  clear        Clear the screen\n  echo <text>  Print text\n  exit [code]  Exit the shell\n  help         Display this help\n  history      Show command history\n  id           Show current identity\n  logout       Return to the login screen\n  chmod MODE PATH...  Change file mode\n  sudo CMD...  Run a command as root\n  pwd          Print working directory\n  export       Print environment variables\n");
+    write_str("GOSH! - OpenHobbyOS Shell\nBuilt-in commands:\n  cd <dir>     Change directory\n  clear        Clear the screen\n  echo <text>  Print text\n  exit [code]  Exit the shell\n  help         Display this help\n  history      Show command history\n  id           Show current identity\n  mouse        Toggle mouse cursor visibility\n  logout       Return to the login screen\n  chmod MODE PATH...  Change file mode\n  sudo CMD...  Run a command as root\n  pwd          Print working directory\n  export       Print environment variables\n");
     return 0;
 }
 
@@ -704,6 +707,45 @@ static int builtin_logout(int argc, const char **argv) {
     g_logged_in = 0;
     g_session_user[0] = '\0';
     return -1;
+}
+
+#define XNX_SOCK_PATH "/tmp/xnx.sock"
+#define XNX_MSG_SHOW_CURSOR 0x000B
+
+static int builtin_mouse(int argc, const char **argv) {
+    (void)argc; (void)argv;
+    static int cursor_on = 0;
+    cursor_on = !cursor_on;
+
+    int fd = sys_socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { write_str("mouse: cannot create socket\n"); return 1; }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    unsigned int i;
+    const char *path = XNX_SOCK_PATH;
+    for (i = 0; i < sizeof(addr.sun_path) - 1 && path[i]; i++)
+        addr.sun_path[i] = path[i];
+    addr.sun_path[i] = '\0';
+
+    if (sys_connect(fd, &addr, sizeof(addr)) < 0) {
+        sys_close(fd);
+        write_str("mouse: compositor not running\n");
+        return 1;
+    }
+
+    struct { uint32_t type; uint32_t payload_size; } hdr;
+    hdr.type = XNX_MSG_SHOW_CURSOR;
+    hdr.payload_size = 1;
+    sys_send(fd, &hdr, 8, 0);
+
+    uint8_t vis = cursor_on ? 1 : 0;
+    sys_send(fd, &vis, 1, 0);
+
+    sys_close(fd);
+    write_str(cursor_on ? "mouse: cursor ON\n" : "mouse: cursor OFF\n");
+    return 0;
 }
 
 int main(int argc, char **argv, char **envp) {

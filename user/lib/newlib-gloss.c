@@ -174,6 +174,118 @@ clock_t _times(struct tms *buf) {
     return -1;  /* Not implemented (sorry not sorry) */
 }
 
+/* _ioctl - device control */
+int _ioctl(int fd, unsigned int request, void *argp) {
+    return sys_ioctl(fd, request, argp);
+}
+
+/* _mmap - map files or devices into memory */
+void *_mmap(void *addr, unsigned int length, int prot, int flags, int fd, long offset) {
+    /* newlib mmap: offset is in bytes, kernel mmap2 expects page offset */
+    unsigned int page_offset = (unsigned int)((unsigned long)offset >> 12);
+    return sys_mmap2(addr, length, prot, flags, fd, page_offset);
+}
+
+/* _munmap - unmap files or devices from memory */
+int _munmap(void *addr, unsigned int length) {
+    return sys_munmap(addr, length);
+}
+
+/* _poll - wait for events on file descriptors */
+int _poll(void *fds, unsigned int nfds, int timeout) {
+    return sys_poll(fds, nfds, timeout);
+}
+
+/* _socket - create a socket */
+int _socket(int domain, int type, int protocol) {
+    return sys_socket(domain, type, protocol);
+}
+
+/* _connect - initiate a connection on a socket */
+int _connect(int fd, const void *addr, unsigned int addrlen) {
+    return sys_connect(fd, addr, addrlen);
+}
+
+/* _bind - bind a socket to an address */
+int _bind(int fd, const void *addr, unsigned int addrlen) {
+    return sys_bind(fd, addr, addrlen);
+}
+
+/* _listen - listen for connections on a socket */
+int _listen(int fd, int backlog) {
+    return sys_listen(fd, backlog);
+}
+
+/* _accept - accept a connection on a socket */
+int _accept(int fd, void *addr, unsigned int *addrlen) {
+    return sys_accept(fd, addr, addrlen);
+}
+
+/* _send - send a message on a socket */
+int _send(int fd, const void *buf, unsigned int len, int flags) {
+    return sys_send(fd, buf, len, flags);
+}
+
+/* _recv - receive a message from a socket */
+int _recv(int fd, void *buf, unsigned int len, int flags) {
+    return sys_recv(fd, buf, len, flags);
+}
+
+/* _sendto - send a message on a socket */
+int _sendto(int fd, const void *buf, unsigned int len, int flags, const void *dest_addr, unsigned int addrlen) {
+    return sys_sendto(fd, buf, len, flags, dest_addr, addrlen);
+}
+
+/* _recvfrom - receive a message from a socket */
+int _recvfrom(int fd, void *buf, unsigned int len, int flags, void *src_addr, unsigned int *addrlen) {
+    return sys_recvfrom(fd, buf, len, flags, src_addr, addrlen);
+}
+
+/* _shutdown - shut down part of a socket */
+int _shutdown(int fd, int how) {
+    return sys_sock_shutdown(fd, how);
+}
+
+/* _setsockopt - set socket option */
+int _setsockopt(int fd, int level, int optname, const void *optval, unsigned int optlen) {
+    return sys_setsockopt(fd, level, optname, optval, optlen);
+}
+
+/* _getsockopt - get socket option */
+int _getsockopt(int fd, int level, int optname, void *optval, unsigned int *optlen) {
+    return sys_getsockopt(fd, level, optname, optval, optlen);
+}
+
+/* _getsockname - get socket name */
+int _getsockname(int fd, void *addr, unsigned int *addrlen) {
+    return sys_getsockname(fd, addr, addrlen);
+}
+
+/* _getpeername - get name of connected peer socket */
+int _getpeername(int fd, void *addr, unsigned int *addrlen) {
+    return sys_getpeername(fd, addr, addrlen);
+}
+
+/* _sendmsg - send a message on a socket */
+int _sendmsg(int fd, const void *msg, int flags) {
+    return sys_sendmsg(fd, msg, flags);
+}
+
+/* _recvmsg - receive a message from a socket */
+int _recvmsg(int fd, void *msg, int flags) {
+    return sys_recvmsg(fd, msg, flags);
+}
+
+/* _unlink - delete a name from the filesystem */
+int _unlink(const char *path) {
+    return sys_unlink(path);
+}
+
+/* _dup - duplicate a file descriptor */
+int _dup(int oldfd) {
+    return sys_dup(oldfd);
+}
+
 /* _sbrk - adjust program break (for malloc) */
 void *_sbrk(ptrdiff_t incr) {
     void *old = sys_brk((void *)0);

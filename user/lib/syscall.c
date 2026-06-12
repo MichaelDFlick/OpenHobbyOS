@@ -320,3 +320,75 @@ int sys_blkwrite(unsigned int dev_id, unsigned int lba, const void *buffer, unsi
 int sys_install_op(unsigned int op, unsigned int arg1, unsigned int arg2, void *buf, unsigned int buf_size) {
     return syscall5(OHOS_SYS_INSTALL_OP, (int)op, (int)arg1, (int)arg2, (int)buf, (int)buf_size);
 }
+
+int sys_socket(int domain, int type, int protocol) {
+    return syscall3(LINUX_SYS_SOCKET, domain, type, protocol);
+}
+
+int sys_connect(int fd, const void *addr, unsigned int addrlen) {
+    return syscall3(LINUX_SYS_CONNECT, fd, (int)addr, (int)addrlen);
+}
+
+int sys_bind(int fd, const void *addr, unsigned int addrlen) {
+    return syscall3(LINUX_SYS_BIND, fd, (int)addr, (int)addrlen);
+}
+
+int sys_listen(int fd, int backlog) {
+    return syscall2(LINUX_SYS_LISTEN, fd, backlog);
+}
+
+int sys_accept(int fd, void *addr, unsigned int *addrlen) {
+    return syscall3(LINUX_SYS_ACCEPT, fd, (int)addr, (int)addrlen);
+}
+
+int sys_send(int fd, const void *buf, unsigned int len, int flags) {
+    return syscall4(LINUX_SYS_SEND, fd, (int)buf, (int)len, flags);
+}
+
+int sys_recv(int fd, void *buf, unsigned int len, int flags) {
+    return syscall4(LINUX_SYS_RECV, fd, (int)buf, (int)len, flags);
+}
+
+int sys_sendto(int fd, const void *buf, unsigned int len, int flags, const void *dest_addr, unsigned int addrlen) {
+    return syscall6(LINUX_SYS_SENDTO, fd, (int)buf, (int)len, flags, (int)dest_addr, (int)addrlen);
+}
+
+int sys_recvfrom(int fd, void *buf, unsigned int len, int flags, void *src_addr, unsigned int *addrlen) {
+    return syscall6(LINUX_SYS_RECVFROM, fd, (int)buf, (int)len, flags, (int)src_addr, (int)addrlen);
+}
+
+int sys_poll(void *fds, unsigned int nfds, int timeout) {
+    return syscall3(LINUX_SYS_POLL, (int)fds, (int)nfds, timeout);
+}
+
+int sys_sock_shutdown(int fd, int how) {
+    return syscall2(LINUX_SYS_SHUTDOWN, fd, how);
+}
+
+int sys_setsockopt(int fd, int level, int optname, const void *optval, unsigned int optlen) {
+    return syscall5(LINUX_SYS_SETSOCKOPT, fd, level, optname, (int)optval, (int)optlen);
+}
+
+int sys_getsockopt(int fd, int level, int optname, void *optval, unsigned int *optlen) {
+    return syscall5(LINUX_SYS_GETSOCKOPT, fd, level, optname, (int)optval, (int)optlen);
+}
+
+int sys_getsockname(int fd, void *addr, unsigned int *addrlen) {
+    return syscall3(LINUX_SYS_GETSOCKNAME, fd, (int)addr, (int)addrlen);
+}
+
+int sys_getpeername(int fd, void *addr, unsigned int *addrlen) {
+    return syscall3(LINUX_SYS_GETPEERNAME, fd, (int)addr, (int)addrlen);
+}
+
+int sys_sendmsg(int fd, const void *msg, int flags) {
+    return syscall3(OHOS_SYS_SENDMSG, fd, (int)msg, flags);
+}
+
+int sys_recvmsg(int fd, void *msg, int flags) {
+    return syscall3(OHOS_SYS_RECVMSG, fd, (int)msg, flags);
+}
+
+int sys_dup(int oldfd) {
+    return syscall1(LINUX_SYS_DUP, oldfd);
+}

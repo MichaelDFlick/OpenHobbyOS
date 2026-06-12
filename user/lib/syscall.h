@@ -73,6 +73,25 @@ int sys_blkread(unsigned int dev_id, unsigned int lba, void *buffer, unsigned in
 int sys_blkwrite(unsigned int dev_id, unsigned int lba, const void *buffer, unsigned int sectors);
 int sys_install_op(unsigned int op, unsigned int arg1, unsigned int arg2, void *buf, unsigned int buf_size);
 
+int sys_socket(int domain, int type, int protocol);
+int sys_connect(int fd, const void *addr, unsigned int addrlen);
+int sys_bind(int fd, const void *addr, unsigned int addrlen);
+int sys_listen(int fd, int backlog);
+int sys_accept(int fd, void *addr, unsigned int *addrlen);
+int sys_send(int fd, const void *buf, unsigned int len, int flags);
+int sys_recv(int fd, void *buf, unsigned int len, int flags);
+int sys_sendto(int fd, const void *buf, unsigned int len, int flags, const void *dest_addr, unsigned int addrlen);
+int sys_recvfrom(int fd, void *buf, unsigned int len, int flags, void *src_addr, unsigned int *addrlen);
+int sys_poll(void *fds, unsigned int nfds, int timeout);
+int sys_sock_shutdown(int fd, int how);
+int sys_setsockopt(int fd, int level, int optname, const void *optval, unsigned int optlen);
+int sys_getsockopt(int fd, int level, int optname, void *optval, unsigned int *optlen);
+int sys_getsockname(int fd, void *addr, unsigned int *addrlen);
+int sys_getpeername(int fd, void *addr, unsigned int *addrlen);
+int sys_sendmsg(int fd, const void *msg, int flags);
+int sys_recvmsg(int fd, void *msg, int flags);
+int sys_dup(int oldfd);
+
 #ifdef __cplusplus
 }
 #endif

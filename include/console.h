@@ -54,6 +54,7 @@ void console_vprintf(const char *fmt, va_list args);
 void console_hexdump(const void *data, size_t length, uintptr_t base_offset);
 int console_get_fb_info(console_fb_info_t *info);
 int console_get_dimensions(size_t *cols, size_t *rows);
+void console_fb_release(void);
 
 #define CONSOLE_TERM_RESP_BUF_SIZE 256
 int console_term_resp_available(void);

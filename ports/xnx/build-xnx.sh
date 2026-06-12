@@ -32,6 +32,10 @@ mkdir -p \
 
 PIXMAN_CFLAGS=($("$PKG_CONFIG" --cflags pixman-1))
 PIXMAN_LIBS=($("$PKG_CONFIG" --libs pixman-1))
+CAIRO_CFLAGS=($("$PKG_CONFIG" --cflags cairo))
+CAIRO_LIBS=($("$PKG_CONFIG" --libs cairo))
+FREETYPE_CFLAGS=($("$PKG_CONFIG" --cflags freetype2))
+FREETYPE_LIBS=($("$PKG_CONFIG" --libs freetype2))
 LODEPNG_CFLAGS=($("$PKG_CONFIG" --cflags lodepng))
 NEWLIB_LIBDIR="$SYSROOT/i686-elf/lib"
 
@@ -54,7 +58,7 @@ COMMON_CFLAGS=(
 compile_object() {
     local src=$1
     local out=$2
-    "$CC" "${COMMON_CFLAGS[@]}" "${PIXMAN_CFLAGS[@]}" "${LODEPNG_CFLAGS[@]}" -c "$src" -o "$out"
+    "$CC" "${COMMON_CFLAGS[@]}" "${PIXMAN_CFLAGS[@]}" "${CAIRO_CFLAGS[@]}" "${FREETYPE_CFLAGS[@]}" "${LODEPNG_CFLAGS[@]}" -c "$src" -o "$out"
 }
 
 build_compositor() {
@@ -67,6 +71,8 @@ build_compositor() {
         -o "$BUILD_DIR/bin/xnx-compositor" \
         "$BUILD_DIR/obj/compositor.o" \
         -Wl,--start-group \
+        "${CAIRO_LIBS[@]}" \
+        "${FREETYPE_LIBS[@]}" \
         "${PIXMAN_LIBS[@]}" \
         -llodepng \
         -L"$NEWLIB_LIBDIR" \
