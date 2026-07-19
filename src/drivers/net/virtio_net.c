@@ -377,11 +377,12 @@ static bool virtio_net_probe(const pci_device_t *pci)
     io_wait();
 
     /* Register as netdev */
-    vdev.netdev = netdev_register("eth0", vdev.mac, &virtio_net_ops, NULL);
-    if (!vdev.netdev) {
+    int netdev_id = netdev_register("eth0", vdev.mac, &virtio_net_ops, NULL);
+    if (netdev_id < 0) {
         console_printf("virtio-net: netdev_register failed\n");
         return false;
     }
+    vdev.netdev = netdev_by_id((u32)netdev_id);
 
     /* Install IRQ handler */
     irq_install_handler(vdev.irq, virtio_net_irq_handler);
