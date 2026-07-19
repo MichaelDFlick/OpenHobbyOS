@@ -4,6 +4,7 @@
 #include "memory.h"
 #include "string.h"
 #include "pit.h"
+#include "keyboard.h"
 
 #define HID_REQ_GET_REPORT    0x01
 #define HID_REQ_SET_PROTOCOL  0x0B
@@ -79,7 +80,9 @@ static void process_report(u8 *report) {
         if (!was_pressed && key < sizeof(usb_keycode_to_ascii) / sizeof(usb_keycode_to_ascii[0])) {
             char ch = usb_keycode_to_ascii[key][shift ? 1 : 0];
             if (ch) {
+                /* Push to both our local buffer and the PS/2 keyboard buffer */
                 push_key(ch);
+                keyboard_push_char(ch);
             }
         }
     }

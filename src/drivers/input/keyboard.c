@@ -161,6 +161,11 @@ void keyboard_init(void) {
     caps_lock = false;
     ctrl_down = false;
 
+    /* Enable keyboard on PS/2 controller */
+    kbd_wait_input();
+    outb(0x64, 0xAE);              /* enable keyboard */
+    pit_sleep(1);
+    
     /* Enable keyboard interrupts on the i8042 controller */
     kbd_wait_input();
     outb(0x64, 0x20);              /* command: read command byte */
@@ -171,6 +176,12 @@ void keyboard_init(void) {
     kbd_wait_input();
     outb(0x60, cmd | 1u);          /* set bit 0 = enable keyboard interrupt */
 
+    /* Clear any pending keyboard data */
+    while (inb(0x64) & 1) {
+        inb(KEYBOARD_DATA_PORT);
+    }
+
+    console_printf("[keyboard] init: IRQ1 enabled\n");
     irq_install_handler(1, keyboard_irq);
     pic_clear_mask(1);
 }
@@ -213,6 +224,10 @@ char keyboard_getchar_only(void) {
     char ch = input_buffer[input_tail];
     input_tail = (input_tail + 1u) % KEYBOARD_BUFFER_SIZE;
     return ch;
+}
+
+void keyboard_push_char(char ch) {
+    queue_char(ch);
 }
 
 size_t keyboard_readline(char *buffer, size_t size) {
