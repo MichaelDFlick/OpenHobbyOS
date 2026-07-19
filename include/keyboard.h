@@ -12,4 +12,7 @@ char keyboard_getchar_only(void);
 bool keyboard_has_raw_scancode(void);
 u8 keyboard_read_raw_scancode(void);
 
+/* Push a character to the keyboard buffer (for use by USB keyboard driver) */
+void keyboard_push_char(char ch);
+
 #endif

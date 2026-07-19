@@ -317,11 +317,25 @@ void *uhci_init(const pci_device_t *pci) {
     uhci_dev_t *dev = &uhci_dev;
     memset(dev, 0, sizeof(uhci_dev_t));
 
-    dev->io_base = (u16)(pci->bar0 & 0xFFFC);
+    /* Enable I/O space if not already enabled */
+    u32 cmd = pci_config_read(pci->bus, pci->slot, pci->func, 0x04);
+    if (!(cmd & 0x01)) {
+        cmd |= 0x01;  /* Enable I/O space */
+        pci_config_write(pci->bus, pci->slot, pci->func, 0x04, cmd);
+    }
+    
+    /* Read BAR0 - if it's 0, the PIIX4 USB uses a fixed I/O port */
+    u32 bar0 = pci_config_read(pci->bus, pci->slot, pci->func, 0x10);
+    if ((bar0 & 0xFFFC) == 0) {
+        /* PIIX4 USB uses fixed I/O port 0xD800 */
+        dev->io_base = 0xD800;
+    } else {
+        dev->io_base = (u16)(bar0 & 0xFFFC);
+    }
     dev->irq = pci->irq;
     dev->num_ports = 2;
 
-    u32 cmd = pci_config_read(pci->bus, pci->slot, pci->func, 0x04);
+    cmd = pci_config_read(pci->bus, pci->slot, pci->func, 0x04);
     cmd |= 0x05;
     cmd &= ~0x04;
     pci_config_write(pci->bus, pci->slot, pci->func, 0x04, cmd);
