@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <pixman.h>
 #include <poll.h>
 #include <stdio.h>

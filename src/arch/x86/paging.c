@@ -3,6 +3,7 @@
 #include "console.h"
 #include "memory.h"
 #include "panic.h"
+#include "serial.h"
 #include "string.h"
 #include "task.h"
 #include "swap.h"
@@ -335,6 +336,7 @@ bool page_map_existing(page_directory_t *pd, u32 virt_addr, u32 phys_addr, u16 f
 
         if ((flags & PTE_USER) && !(pd->entries[pd_idx] & PTE_USER)) {
             pd->entries[pd_idx] |= PTE_USER;
+            paging_invalidate_tlb(virt_addr);
         }
     }
 
@@ -845,6 +847,27 @@ void page_fault_handler(u32 virt_addr, u32 error_code, registers_t *regs) {
             u32 pte = pt->entries[pt_idx];
 
             if ((pte & PTE_PRESENT) && !(pte & PTE_USER)) {
+                pt->entries[pt_idx] = entry_create(
+                    entry_get_phys(pte),
+                    (entry_get_flags(pte) & ~PTE_GLOBAL) | PTE_USER);
+                paging_invalidate_tlb(virt_addr);
+                return;
+            }
+        }
+
+        /* Handle case where PDE exists (copied from kernel) but lacks PTE_USER.
+         * The PDE may have been copied without PTE_ALLOCATED (shared kernel identity).
+         * We need to add PTE_USER to both PDE and PTE. */
+        if ((pd->entries[pd_idx] & PTE_PRESENT) &&
+            !(pd->entries[pd_idx] & PTE_USER)) {
+            u32 pt_phys = entry_get_phys(pd->entries[pd_idx]);
+            page_table_t *pt = ptable_ptr(pt_phys);
+            u32 pte = pt->entries[pt_idx];
+
+            if ((pte & PTE_PRESENT) && !(pte & PTE_USER)) {
+                /* Set PTE_USER on PDE first - without this, CPU denies access */
+                pd->entries[pd_idx] |= PTE_USER;
+                /* Upgrade PTE with PTE_USER, removing PTE_GLOBAL */
                 pt->entries[pt_idx] = entry_create(
                     entry_get_phys(pte),
                     (entry_get_flags(pte) & ~PTE_GLOBAL) | PTE_USER);
